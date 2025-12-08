@@ -10,19 +10,44 @@ const state = {
 // Versiones y CDNs
 const FF_VERSIONS = {
   ffmpeg: '0.12.10',
-  util: '0.12.1', // versión conocida en CDN con build UMD
   core: '0.12.10'
 };
 
 const CORE_CDN_BASES = [
-  `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${FF_VERSIONS.core}/dist/umd`,
-  `https://unpkg.com/@ffmpeg/core@${FF_VERSIONS.core}/dist/umd`
+  `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${FF_VERSIONS.core}/dist`,
+  `https://unpkg.com/@ffmpeg/core@${FF_VERSIONS.core}/dist`
 ];
 
 const SCRIPT_CDN_BASES = [
   'https://cdn.jsdelivr.net/npm',
   'https://unpkg.com'
 ];
+
+// Utilidades locales para evitar depender de @ffmpeg/util (problemas de CDN/mime)
+const localFFmpegUtils = {
+  async fetchFile(source) {
+    if (source instanceof Uint8Array) return source;
+    if (source instanceof ArrayBuffer) return new Uint8Array(source);
+    if (source instanceof Blob) return new Uint8Array(await source.arrayBuffer());
+    if (typeof source === 'string') {
+      const response = await fetch(source);
+      if (!response.ok) {
+        throw new Error(`fetchFile: fallo al descargar ${source} (${response.status})`);
+      }
+      return new Uint8Array(await response.arrayBuffer());
+    }
+    throw new Error('fetchFile: tipo de entrada no soportado');
+  },
+
+  async toBlobURL(url, mimeType) {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`toBlobURL: fallo al descargar ${url} (${response.status})`);
+    }
+    const blob = new Blob([await response.arrayBuffer()], { type: mimeType });
+    return URL.createObjectURL(blob);
+  }
+};
 
 // Cargar script con fallback de CDN
 function loadScriptWithFallback(label, buildURL) {
@@ -78,24 +103,15 @@ async function loadFFmpegScript() {
   );
 }
 
-// Cargar FFmpeg Util desde CDN
-async function loadFFmpegUtilScript() {
-  return loadScriptWithFallback(
-    'ffmpeg-util.js',
-    (base) => `${base}/@ffmpeg/util@${FF_VERSIONS.util}/dist/umd/ffmpeg-util.js`
-  );
-}
-
 // Resolver URLs de core con fallback de CDN para evitar CORS/404
 async function resolveCoreURLs() {
-  const { toBlobURL } = FFmpegUtil;
   const errors = [];
 
   for (const baseURL of CORE_CDN_BASES) {
     try {
-      const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
-      const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
-      const workerURL = await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
+      const coreURL = await localFFmpegUtils.toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+      const wasmURL = await localFFmpegUtils.toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+      const workerURL = await localFFmpegUtils.toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
       return { coreURL, wasmURL, workerURL, baseURL };
     } catch (error) {
       console.warn(`Fallo cargando core desde ${baseURL}`, error);
@@ -116,14 +132,12 @@ async function loadFFmpeg() {
   try {
     // Cargar scripts de FFmpeg
     console.log('Cargando scripts de FFmpeg...');
-    await loadFFmpegUtilScript();
     await loadFFmpegScript();
     
     console.log('Scripts cargados, inicializando FFmpeg...');
     
     // Crear instancia de FFmpeg
     const { FFmpeg } = FFmpegWASM;
-    const { fetchFile } = FFmpegUtil;
     
     const ffmpeg = new FFmpeg();
     
@@ -206,7 +220,6 @@ async function convertVideo(videoData) {
     return;
   }
 
-  const { fetchFile } = FFmpegUtil;
   const ffmpeg = state.ffmpeg;
   const inputName = `input_${videoData.id}.${videoData.originalFile.name.split('.').pop()}`;
   const outputName = `output_${videoData.id}.webm`;
@@ -217,7 +230,7 @@ async function convertVideo(videoData) {
 
     console.log('Escribiendo archivo de entrada...');
     // Escribir archivo de entrada
-    await ffmpeg.writeFile(inputName, await fetchFile(videoData.originalFile));
+    await ffmpeg.writeFile(inputName, await localFFmpegUtils.fetchFile(videoData.originalFile));
 
     // Configurar progreso
     let lastProgress = 0;
