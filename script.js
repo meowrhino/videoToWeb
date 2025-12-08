@@ -10,12 +10,12 @@ const state = {
 // Versiones y CDNs
 const FF_VERSIONS = {
   ffmpeg: '0.12.10',
-  core: '0.12.10'
+  core: '0.12.6'
 };
 
 const CORE_CDN_BASES = [
-  `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${FF_VERSIONS.core}/dist`,
-  `https://unpkg.com/@ffmpeg/core@${FF_VERSIONS.core}/dist`
+  `https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@${FF_VERSIONS.core}/dist/umd`,
+  `https://unpkg.com/@ffmpeg/core-mt@${FF_VERSIONS.core}/dist/umd`
 ];
 
 const SCRIPT_CDN_BASES = [
