@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>convertidor de vídeo a webm</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <h1>convertidor de vídeo a webm</h1>
+      <p>convierte tus videos a formato webm con compresión vp9 optimizada</p>
+    </header>
+
+    <!-- Upload Area -->
+    <div class="upload-area" id="uploadArea">
+      <svg class="upload-icon" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      <h3 id="uploadTitle">arrastra vídeos aquí o haz clic para seleccionar</h3>
+      <p id="uploadSubtitle">soporta mp4, mov, avi, mkv, flv y más formatos</p>
+      <button class="btn-primary" id="selectBtn">seleccionar archivos</button>
+      <input type="file" id="fileInput" accept="video/*" multiple hidden>
+    </div>
+
+    <!-- CRF Control -->
+    <div class="controls-panel">
+      <div class="control-card">
+        <div class="control-header">
+          <h4>control de calidad (crf): <span id="crfValue">31</span></h4>
+          <span class="control-description" id="crfDescription">calidad alta (recomendado)</span>
+        </div>
+        <div class="control-group">
+          <div class="control-row">
+            <input type="range" id="crfSlider" min="15" max="40" step="1" value="31">
+          </div>
+          <div class="control-labels">
+            <span>15 (mejor calidad)</span>
+            <span>40 (menor tamaño)</span>
+          </div>
+        </div>
+        
+        <!-- Info Box -->
+        <div class="info-box">
+          <svg class="info-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+          <div class="info-content">
+            <p><strong>crf (constant rate factor)</strong> controla la calidad del video:</p>
+            <ul>
+              <li><strong>valores bajos (15-20):</strong> máxima calidad, archivos grandes</li>
+              <li><strong>valores medios (25-32):</strong> buen balance calidad/tamaño</li>
+              <li><strong>valores altos (35-40):</strong> menor calidad, archivos pequeños</li>
+            </ul>
+            <p class="presets"><strong>presets recomendados:</strong> 480p=33, 720p=32, 1080p=31</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Videos Container -->
+    <div id="videosContainer" class="videos-container" style="display: none;">
+      <div class="videos-header">
+        <h3 id="videoCount">0 vídeos convertidos</h3>
+        <button class="btn-secondary" id="downloadAllBtn">descargar todo (zip)</button>
+      </div>
+      <div id="videosList" class="videos-grid"></div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
