@@ -662,9 +662,12 @@ function removeVideo(id) {
   }
 }
 
-// Descargar todos los videos
+/**
+ * Descarga todos los videos completados en un archivo ZIP
+ * Usa JSZip cargado desde CDN para crear el archivo ZIP en memoria
+ */
 async function downloadAll() {
-  console.log('[downloadAll] Iniciando descarga de todos los videos');
+  console.log('[downloadAll] Iniciando descarga de todos los videos en ZIP');
   const completedVideos = state.videos.filter(v => v.status === 'completed');
   
   if (completedVideos.length === 0) {
@@ -673,13 +676,62 @@ async function downloadAll() {
     return;
   }
 
-  for (const video of completedVideos) {
-    downloadVideo(video.id);
-    // Pequeña pausa entre descargas
-    await new Promise(resolve => setTimeout(resolve, 300));
-  }
+  try {
+    // Cargar JSZip si no está disponible
+    if (typeof JSZip === 'undefined') {
+      console.log('[downloadAll] Cargando JSZip desde CDN...');
+      await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
+      console.log('[downloadAll] ✓ JSZip cargado');
+    }
 
-  showNotification(`descargando ${completedVideos.length} videos`, 'success');
+    showNotification('creando archivo zip...', 'info');
+    
+    // Crear instancia de JSZip
+    const zip = new JSZip();
+    
+    // Añadir cada video al ZIP
+    for (const video of completedVideos) {
+      const filename = video.originalFile.name.replace(/\.[^/.]+$/, '') + '.webm';
+      console.log(`[downloadAll] Añadiendo al ZIP: ${filename}`);
+      zip.file(filename, video.webmBlob);
+    }
+    
+    // Generar el archivo ZIP
+    console.log('[downloadAll] Generando archivo ZIP...');
+    const zipBlob = await zip.generateAsync({
+      type: 'blob',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 }
+    });
+    
+    // Descargar el ZIP
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(zipBlob);
+    link.download = `videos_convertidos_${Date.now()}.zip`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    
+    console.log('[downloadAll] ✓ ZIP descargado exitosamente');
+    showNotification(`${completedVideos.length} videos descargados en zip`, 'success');
+  } catch (error) {
+    console.error('[downloadAll] Error creando ZIP:', error);
+    showNotification('error al crear el archivo zip', 'error');
+  }
+}
+
+/**
+ * Carga un script externo de forma dinámica
+ * @param {string} src - URL del script a cargar
+ * @returns {Promise} - Promesa que se resuelve cuando el script se carga
+ */
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = src;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+    document.head.appendChild(script);
+  });
 }
 
 // Formatear duración

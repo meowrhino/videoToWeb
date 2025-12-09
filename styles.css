@@ -227,6 +227,11 @@ body {
 /* Videos Grid */
 .videos-grid {
   margin: 2rem 0;
+  display: none;
+}
+
+.videos-grid.visible {
+  display: block;
 }
 
 .grid-header {
