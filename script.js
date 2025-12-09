@@ -7,80 +7,6 @@ const state = {
   isLoadingFFmpeg: false
 };
 
-// Versiones y CDNs
-const FF_VERSIONS = {
-  ffmpeg: '0.12.10',
-  core: '0.12.6'
-};
-
-const CORE_CDN_BASES = [
-  `https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@${FF_VERSIONS.core}/dist/umd`,
-  `https://unpkg.com/@ffmpeg/core-mt@${FF_VERSIONS.core}/dist/umd`
-];
-
-const SCRIPT_CDN_BASES = [
-  'https://cdn.jsdelivr.net/npm',
-  'https://unpkg.com'
-];
-
-// Utilidades locales para evitar depender de @ffmpeg/util (problemas de CDN/mime)
-const localFFmpegUtils = {
-  async fetchFile(source) {
-    if (source instanceof Uint8Array) return source;
-    if (source instanceof ArrayBuffer) return new Uint8Array(source);
-    if (source instanceof Blob) return new Uint8Array(await source.arrayBuffer());
-    if (typeof source === 'string') {
-      const response = await fetch(source);
-      if (!response.ok) {
-        throw new Error(`fetchFile: fallo al descargar ${source} (${response.status})`);
-      }
-      return new Uint8Array(await response.arrayBuffer());
-    }
-    throw new Error('fetchFile: tipo de entrada no soportado');
-  },
-
-  async toBlobURL(url, mimeType) {
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new Error(`toBlobURL: fallo al descargar ${url} (${response.status})`);
-    }
-    const blob = new Blob([await response.arrayBuffer()], { type: mimeType });
-    return URL.createObjectURL(blob);
-  }
-};
-
-// Cargar script con fallback de CDN
-function loadScriptWithFallback(label, buildURL) {
-  return new Promise((resolve, reject) => {
-    let index = 0;
-    let lastError = null;
-
-    const tryNext = () => {
-      if (index >= SCRIPT_CDN_BASES.length) {
-        reject(new Error(`${label}: no se pudo cargar (${lastError?.message || 'sin detalles'})`));
-        return;
-      }
-
-      const url = buildURL(SCRIPT_CDN_BASES[index]);
-      index += 1;
-
-      const script = document.createElement('script');
-      script.src = url;
-      script.crossOrigin = 'anonymous';
-      script.onload = () => resolve(url);
-      script.onerror = (e) => {
-        lastError = new Error(`error cargando ${url}`);
-        console.warn(`${label}: fallo ${url}`, e);
-        tryNext();
-      };
-
-      document.head.appendChild(script);
-    };
-
-    tryNext();
-  });
-}
-
 // Elementos del DOM
 const uploadArea = document.getElementById('uploadArea');
 const fileInput = document.getElementById('fileInput');
@@ -95,34 +21,14 @@ const crfDescription = document.getElementById('crfDescription');
 const uploadTitle = document.getElementById('uploadTitle');
 const uploadSubtitle = document.getElementById('uploadSubtitle');
 
-// Cargar FFmpeg desde CDN
-async function loadFFmpegScript() {
-  return loadScriptWithFallback(
-    'ffmpeg.js',
-    (base) => `${base}/@ffmpeg/ffmpeg@${FF_VERSIONS.ffmpeg}/dist/umd/ffmpeg.js`
-  );
+// Utilidad para convertir archivos a Uint8Array
+async function fetchFile(file) {
+  if (file instanceof Uint8Array) return file;
+  if (file instanceof Blob) return new Uint8Array(await file.arrayBuffer());
+  throw new Error('fetchFile: tipo de entrada no soportado');
 }
 
-// Resolver URLs de core con fallback de CDN para evitar CORS/404
-async function resolveCoreURLs() {
-  const errors = [];
-
-  for (const baseURL of CORE_CDN_BASES) {
-    try {
-      const coreURL = await localFFmpegUtils.toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
-      const wasmURL = await localFFmpegUtils.toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
-      const workerURL = await localFFmpegUtils.toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
-      return { coreURL, wasmURL, workerURL, baseURL };
-    } catch (error) {
-      console.warn(`Fallo cargando core desde ${baseURL}`, error);
-      errors.push({ baseURL, error });
-    }
-  }
-
-  throw new Error(`no se pudo descargar ffmpeg-core (${errors.map(e => e.baseURL).join(', ')})`);
-}
-
-// Inicializar FFmpeg
+// Inicializar FFmpeg (versión 0.11.6 compatible con GitHub Pages)
 async function loadFFmpeg() {
   if (state.ffmpegLoaded || state.isLoadingFFmpeg) return;
 
@@ -130,30 +36,30 @@ async function loadFFmpeg() {
   updateUploadAreaLoading(true);
 
   try {
-    // Cargar scripts de FFmpeg
-    console.log('Cargando scripts de FFmpeg...');
-    await loadFFmpegScript();
+    console.log('Cargando FFmpeg 0.11.6...');
     
-    console.log('Scripts cargados, inicializando FFmpeg...');
+    // Cargar el script de FFmpeg 0.11.6
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js';
+    
+    await new Promise((resolve, reject) => {
+      script.onload = resolve;
+      script.onerror = () => reject(new Error('Error cargando FFmpeg script'));
+      document.head.appendChild(script);
+    });
+
+    console.log('Script cargado, creando instancia...');
     
     // Crear instancia de FFmpeg
-    const { FFmpeg } = FFmpegWASM;
+    const { createFFmpeg, fetchFile: ffmpegFetchFile } = FFmpeg;
     
-    const ffmpeg = new FFmpeg();
-    
-    ffmpeg.on('log', ({ message }) => {
-      console.log('[FFmpeg]', message);
+    const ffmpeg = createFFmpeg({
+      log: true,
+      corePath: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.10.0/dist/ffmpeg-core.js'
     });
 
     console.log('Cargando core de FFmpeg...');
-    const { coreURL, wasmURL, workerURL, baseURL } = await resolveCoreURLs();
-    console.log(`Core localizado en ${baseURL}`);
-
-    await ffmpeg.load({
-      coreURL,
-      wasmURL,
-      workerURL
-    });
+    await ffmpeg.load();
 
     state.ffmpeg = ffmpeg;
     state.ffmpegLoaded = true;
@@ -229,44 +135,44 @@ async function convertVideo(videoData) {
     updateVideoStatus(videoData.id, 'converting', 0);
 
     console.log('Escribiendo archivo de entrada...');
-    // Escribir archivo de entrada
-    await ffmpeg.writeFile(inputName, await localFFmpegUtils.fetchFile(videoData.originalFile));
+    // Escribir archivo de entrada usando la API 0.11.6
+    ffmpeg.FS('writeFile', inputName, await fetchFile(videoData.originalFile));
 
     // Configurar progreso
-    let lastProgress = 0;
-    ffmpeg.on('progress', ({ progress }) => {
-      const currentProgress = Math.round(progress * 100);
-      if (currentProgress !== lastProgress) {
-        lastProgress = currentProgress;
-        updateVideoProgress(videoData.id, currentProgress);
-      }
+    ffmpeg.setProgress(({ ratio }) => {
+      const currentProgress = Math.round(ratio * 100);
+      updateVideoProgress(videoData.id, currentProgress);
     });
 
     console.log('Ejecutando conversión...');
-    // Ejecutar conversión con parámetros optimizados
-    await ffmpeg.exec([
+    // Ejecutar conversión con parámetros optimizados para VP9
+    await ffmpeg.run(
       '-i', inputName,
       '-c:v', 'libvpx-vp9',
       '-crf', state.crf.toString(),
       '-b:v', '0',
       '-c:a', 'libopus',
-      '-row-mt', '1',
-      '-threads', '4',
+      '-cpu-used', '5',
+      '-deadline', 'realtime',
       outputName
-    ]);
+    );
 
     console.log('Leyendo archivo de salida...');
     // Leer archivo de salida
-    const data = await ffmpeg.readFile(outputName);
-    const blob = new Blob([data], { type: 'video/webm' });
+    const data = ffmpeg.FS('readFile', outputName);
+    const blob = new Blob([data.buffer], { type: 'video/webm' });
     const url = URL.createObjectURL(blob);
 
     // Actualizar estado a "completado"
     updateVideoCompleted(videoData.id, blob, url);
 
     // Limpiar archivos temporales
-    await ffmpeg.deleteFile(inputName);
-    await ffmpeg.deleteFile(outputName);
+    try {
+      ffmpeg.FS('unlink', inputName);
+      ffmpeg.FS('unlink', outputName);
+    } catch (e) {
+      console.warn('Error limpiando archivos temporales:', e);
+    }
 
     console.log('Conversión completada');
     showNotification(`video convertido: ${videoData.originalFile.name}`, 'success');
@@ -327,269 +233,215 @@ async function handleFiles(files) {
   }
 }
 
-// Renderizar tarjeta de video
-function renderVideoCard(videoData) {
-  const card = document.createElement('div');
-  card.className = 'video-card';
-  card.id = `video-${videoData.id}`;
-
-  const fileName = videoData.originalFile.name.replace(/\.[^/.]+$/, '.webm');
-  const metadata = videoData.metadata;
-
-  card.innerHTML = `
-    <div class="video-preview">
-      <div class="video-preview-placeholder">
-        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polygon points="23 7 16 12 23 17 23 7"/>
-          <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
-        </svg>
-      </div>
-      <button class="btn-remove video-remove-btn" onclick="removeVideo('${videoData.id}')">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="18" y1="6" x2="6" y2="18"/>
-          <line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
-    </div>
-    <div class="video-info">
-      <div class="video-name" title="${fileName}">${fileName}</div>
-      ${metadata.width > 0 ? `
-        <div class="video-metadata">
-          ${metadata.width}×${metadata.height} • ${formatDuration(metadata.duration)}
-        </div>
-      ` : ''}
-      <div class="video-content"></div>
-    </div>
-  `;
-
-  videosList.appendChild(card);
-}
-
 // Actualizar estado del video
 function updateVideoStatus(id, status, progress = 0) {
   const video = state.videos.find(v => v.id === id);
-  if (!video) return;
-
-  video.status = status;
-  video.progress = progress;
-
-  const card = document.getElementById(`video-${id}`);
-  if (!card) return;
-
-  const content = card.querySelector('.video-content');
-  
-  if (status === 'converting') {
-    content.innerHTML = `
-      <div class="progress-container">
-        <div class="progress-header">
-          <span>convirtiendo...</span>
-          <span>${progress}%</span>
-        </div>
-        <div class="progress-bar">
-          <div class="progress-fill animated" style="width: ${progress}%"></div>
-        </div>
-      </div>
-    `;
+  if (video) {
+    video.status = status;
+    video.progress = progress;
+    updateVideoCard(id);
   }
 }
 
 // Actualizar progreso del video
 function updateVideoProgress(id, progress) {
   const video = state.videos.find(v => v.id === id);
-  if (!video) return;
-
-  video.progress = progress;
-
-  const card = document.getElementById(`video-${id}`);
-  if (!card) return;
-
-  const progressText = card.querySelector('.progress-header span:last-child');
-  const progressFill = card.querySelector('.progress-fill');
-
-  if (progressText) progressText.textContent = `${progress}%`;
-  if (progressFill) progressFill.style.width = `${progress}%`;
+  if (video) {
+    video.progress = progress;
+    updateVideoCard(id);
+  }
 }
 
 // Actualizar video completado
 function updateVideoCompleted(id, blob, url) {
   const video = state.videos.find(v => v.id === id);
-  if (!video) return;
-
-  video.status = 'completed';
-  video.progress = 100;
-  video.webmBlob = blob;
-  video.webmSize = blob.size;
-  video.webmUrl = url;
-
-  const card = document.getElementById(`video-${id}`);
-  if (!card) return;
-
-  // Actualizar preview
-  const preview = card.querySelector('.video-preview-placeholder');
-  if (preview) {
-    preview.outerHTML = `<video src="${url}" controls></video>`;
+  if (video) {
+    video.status = 'completed';
+    video.progress = 100;
+    video.webmBlob = blob;
+    video.webmSize = blob.size;
+    video.webmUrl = url;
+    updateVideoCard(id);
+    updateVideosContainer();
   }
-
-  // Actualizar contenido
-  const content = card.querySelector('.video-content');
-  const savings = calculateSavings(video.originalSize, video.webmSize);
-
-  content.innerHTML = `
-    <div class="video-stats">
-      <div class="stat-row">
-        <span class="stat-label">original:</span>
-        <span class="stat-value">${formatSize(video.originalSize)}</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-label">webm:</span>
-        <span class="stat-value">
-          ${formatSize(video.webmSize)}
-          <span class="badge-success">-${savings}%</span>
-        </span>
-      </div>
-    </div>
-    <button class="btn-download" onclick="downloadVideo('${id}')">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: inline; vertical-align: middle; margin-right: 0.5rem;">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-        <polyline points="7 10 12 15 17 10"/>
-        <line x1="12" y1="15" x2="12" y2="3"/>
-      </svg>
-      descargar
-    </button>
-  `;
-
-  updateVideosContainer();
 }
 
 // Actualizar video con error
 function updateVideoError(id, errorMessage) {
   const video = state.videos.find(v => v.id === id);
-  if (!video) return;
+  if (video) {
+    video.status = 'error';
+    video.errorMessage = errorMessage;
+    updateVideoCard(id);
+  }
+}
 
-  video.status = 'error';
-  video.error = errorMessage;
+// Renderizar tarjeta de video
+function renderVideoCard(videoData) {
+  const card = document.createElement('div');
+  card.className = 'video-card';
+  card.id = `video-${videoData.id}`;
+  card.dataset.videoId = videoData.id;
 
+  const originalSizeMB = (videoData.originalSize / (1024 * 1024)).toFixed(2);
+  const duration = videoData.metadata.duration > 0 
+    ? formatDuration(videoData.metadata.duration) 
+    : 'desconocida';
+
+  card.innerHTML = `
+    <div class="video-info">
+      <div class="video-name">${escapeHtml(videoData.originalFile.name)}</div>
+      <div class="video-meta">
+        <span>${originalSizeMB} MB</span>
+        <span>•</span>
+        <span>${duration}</span>
+        ${videoData.metadata.width > 0 ? `
+          <span>•</span>
+          <span>${videoData.metadata.width}x${videoData.metadata.height}</span>
+        ` : ''}
+      </div>
+    </div>
+    <div class="video-status">
+      <div class="status-text">esperando...</div>
+      <div class="progress-bar">
+        <div class="progress-fill" style="width: 0%"></div>
+      </div>
+    </div>
+    <div class="video-actions">
+      <button class="btn-download" disabled>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M8 11L4 7h2.5V3h3v4H12L8 11z" fill="currentColor"/>
+          <path d="M13 13H3v-2H2v2a1 1 0 001 1h10a1 1 0 001-1v-2h-1v2z" fill="currentColor"/>
+        </svg>
+        descargar
+      </button>
+      <button class="btn-remove" onclick="removeVideo('${videoData.id}')">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <path d="M5.5 5.5L10.5 10.5M10.5 5.5L5.5 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+  `;
+
+  videosList.appendChild(card);
+}
+
+// Actualizar tarjeta de video
+function updateVideoCard(id) {
   const card = document.getElementById(`video-${id}`);
   if (!card) return;
 
-  const content = card.querySelector('.video-content');
-  content.innerHTML = `<div class="error-message">${errorMessage}</div>`;
+  const video = state.videos.find(v => v.id === id);
+  if (!video) return;
+
+  const statusText = card.querySelector('.status-text');
+  const progressFill = card.querySelector('.progress-fill');
+  const downloadBtn = card.querySelector('.btn-download');
+
+  switch (video.status) {
+    case 'pending':
+      statusText.textContent = 'esperando...';
+      progressFill.style.width = '0%';
+      downloadBtn.disabled = true;
+      break;
+
+    case 'converting':
+      statusText.textContent = `convirtiendo... ${video.progress}%`;
+      progressFill.style.width = `${video.progress}%`;
+      downloadBtn.disabled = true;
+      break;
+
+    case 'completed':
+      const webmSizeMB = (video.webmSize / (1024 * 1024)).toFixed(2);
+      const reduction = ((1 - video.webmSize / video.originalSize) * 100).toFixed(1);
+      statusText.textContent = `completado - ${webmSizeMB} MB (-${reduction}%)`;
+      statusText.style.color = '#10b981';
+      progressFill.style.width = '100%';
+      progressFill.style.backgroundColor = '#10b981';
+      downloadBtn.disabled = false;
+      downloadBtn.onclick = () => downloadVideo(id);
+      break;
+
+    case 'error':
+      statusText.textContent = video.errorMessage || 'error al convertir';
+      statusText.style.color = '#ef4444';
+      progressFill.style.width = '0%';
+      downloadBtn.disabled = true;
+      break;
+  }
 }
 
 // Actualizar contenedor de videos
 function updateVideosContainer() {
-  const completedCount = state.videos.filter(v => v.status === 'completed').length;
-  const convertingCount = state.videos.filter(v => v.status === 'converting').length;
+  const totalVideos = state.videos.length;
+  const completedVideos = state.videos.filter(v => v.status === 'completed').length;
 
-  if (state.videos.length === 0) {
-    videosContainer.style.display = 'none';
-    return;
+  videoCount.textContent = `${completedVideos} de ${totalVideos} videos convertidos`;
+  
+  if (totalVideos > 0) {
+    videosContainer.classList.add('visible');
   }
 
-  videosContainer.style.display = 'block';
-
-  if (completedCount > 0) {
-    videoCount.textContent = `${completedCount} vídeo${completedCount !== 1 ? 's' : ''} convertido${completedCount !== 1 ? 's' : ''}`;
-    downloadAllBtn.disabled = false;
-  } else if (convertingCount > 0) {
-    videoCount.textContent = `convirtiendo ${convertingCount} vídeo${convertingCount !== 1 ? 's' : ''}...`;
-    downloadAllBtn.disabled = true;
-  } else {
-    videoCount.textContent = 'videos en cola';
-    downloadAllBtn.disabled = true;
-  }
+  downloadAllBtn.disabled = completedVideos === 0;
 }
 
 // Descargar video individual
-window.downloadVideo = function(id) {
+function downloadVideo(id) {
   const video = state.videos.find(v => v.id === id);
-  if (!video || !video.webmBlob || !video.webmUrl) return;
+  if (!video || !video.webmUrl) return;
 
-  const a = document.createElement('a');
-  a.href = video.webmUrl;
-  a.download = video.originalFile.name.replace(/\.[^/.]+$/, '.webm');
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-};
+  const link = document.createElement('a');
+  link.href = video.webmUrl;
+  link.download = video.originalFile.name.replace(/\.[^/.]+$/, '') + '.webm';
+  link.click();
+}
 
 // Eliminar video
-window.removeVideo = function(id) {
-  const video = state.videos.find(v => v.id === id);
-  if (video?.webmUrl) {
+function removeVideo(id) {
+  const index = state.videos.findIndex(v => v.id === id);
+  if (index === -1) return;
+
+  const video = state.videos[index];
+  
+  // Revocar URL si existe
+  if (video.webmUrl) {
     URL.revokeObjectURL(video.webmUrl);
   }
 
-  state.videos = state.videos.filter(v => v.id !== id);
+  // Eliminar del estado
+  state.videos.splice(index, 1);
 
+  // Eliminar del DOM
   const card = document.getElementById(`video-${id}`);
   if (card) {
     card.remove();
   }
 
+  // Actualizar contenedor
   updateVideosContainer();
-};
 
-// Descargar todos los videos en ZIP
-async function downloadAllAsZip() {
+  // Ocultar contenedor si no hay videos
+  if (state.videos.length === 0) {
+    videosContainer.classList.remove('visible');
+  }
+}
+
+// Descargar todos los videos
+async function downloadAll() {
   const completedVideos = state.videos.filter(v => v.status === 'completed');
   
   if (completedVideos.length === 0) {
-    showNotification('no hay videos convertidos para descargar', 'error');
+    showNotification('no hay videos completados para descargar', 'error');
     return;
   }
 
-  try {
-    const zip = new JSZip();
-    
-    completedVideos.forEach(video => {
-      if (video.webmBlob) {
-        const filename = video.originalFile.name.replace(/\.[^/.]+$/, '.webm');
-        zip.file(filename, video.webmBlob);
-      }
-    });
-
-    const blob = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'videos-webm.zip';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    showNotification('descarga iniciada', 'success');
-  } catch (error) {
-    console.error('Error creando ZIP:', error);
-    showNotification('error al crear el archivo zip', 'error');
-  }
-}
-
-// Actualizar descripción de CRF
-function updateCrfDescription(value) {
-  let description = '';
-  
-  if (value <= 20) {
-    description = 'calidad máxima (archivos grandes)';
-  } else if (value <= 25) {
-    description = 'calidad muy alta';
-  } else if (value <= 30) {
-    description = 'calidad alta (recomendado)';
-  } else if (value <= 35) {
-    description = 'calidad media';
-  } else {
-    description = 'calidad baja (archivos pequeños)';
+  for (const video of completedVideos) {
+    downloadVideo(video.id);
+    // Pequeña pausa entre descargas
+    await new Promise(resolve => setTimeout(resolve, 300));
   }
 
-  crfDescription.textContent = description;
-}
-
-// Formatear tamaño
-function formatSize(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  showNotification(`descargando ${completedVideos.length} videos`, 'success');
 }
 
 // Formatear duración
@@ -599,75 +451,84 @@ function formatDuration(seconds) {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-// Calcular ahorro
-function calculateSavings(original, converted) {
-  if (original === 0) return '0.0';
-  const savings = ((original - converted) / original) * 100;
-  return savings.toFixed(1);
+// Escapar HTML
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }
 
 // Mostrar notificación
 function showNotification(message, type = 'info') {
-  console.log(`[${type.toUpperCase()}] ${message}`);
-  // Aquí podrías implementar un sistema de notificaciones toast si lo deseas
+  // Crear elemento de notificación
+  const notification = document.createElement('div');
+  notification.className = `notification notification-${type}`;
+  notification.textContent = message;
+
+  // Agregar al DOM
+  document.body.appendChild(notification);
+
+  // Mostrar con animación
+  setTimeout(() => notification.classList.add('show'), 10);
+
+  // Ocultar y eliminar después de 3 segundos
+  setTimeout(() => {
+    notification.classList.remove('show');
+    setTimeout(() => notification.remove(), 300);
+  }, 3000);
+}
+
+// Actualizar descripción del CRF
+function updateCRFDescription() {
+  const crf = parseInt(crfSlider.value);
+  crfValue.textContent = crf;
+  state.crf = crf;
+
+  let description = '';
+  if (crf <= 20) {
+    description = 'calidad muy alta - archivos grandes';
+  } else if (crf <= 28) {
+    description = 'calidad alta - buen balance';
+  } else if (crf <= 35) {
+    description = 'calidad media - archivos pequeños';
+  } else {
+    description = 'calidad baja - archivos muy pequeños';
+  }
+
+  crfDescription.textContent = description;
 }
 
 // Event Listeners
-uploadArea.addEventListener('click', () => {
-  console.log('Click en área de carga');
-  fileInput.click();
-});
+uploadArea.addEventListener('click', () => fileInput.click());
+selectBtn.addEventListener('click', () => fileInput.click());
 
-selectBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  console.log('Click en botón seleccionar');
-  fileInput.click();
-});
-
-fileInput.addEventListener('change', (e) => {
-  console.log('Cambio en input de archivo');
-  handleFiles(e.target.files);
-});
-
-// Drag & Drop
-['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-  window.addEventListener(eventName, (e) => e.preventDefault(), true);
-});
-
-uploadArea.addEventListener('dragover', () => {
-  uploadArea.classList.add('drag-over');
+uploadArea.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  uploadArea.classList.add('dragover');
 });
 
 uploadArea.addEventListener('dragleave', () => {
-  uploadArea.classList.remove('drag-over');
+  uploadArea.classList.remove('dragover');
 });
 
 uploadArea.addEventListener('drop', (e) => {
-  console.log('Drop de archivos');
-  uploadArea.classList.remove('drag-over');
+  e.preventDefault();
+  uploadArea.classList.remove('dragover');
   handleFiles(e.dataTransfer.files);
 });
 
-// CRF Slider
-crfSlider.addEventListener('input', (e) => {
-  const value = parseInt(e.target.value);
-  state.crf = value;
-  crfValue.textContent = value;
-  updateCrfDescription(value);
+fileInput.addEventListener('change', (e) => {
+  handleFiles(e.target.files);
+  e.target.value = ''; // Reset input
 });
 
-// Download All Button
-downloadAllBtn.addEventListener('click', downloadAllAsZip);
+downloadAllBtn.addEventListener('click', downloadAll);
 
-// Inicializar cuando el DOM esté listo
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    console.log('DOM cargado, inicializando...');
-    loadFFmpeg();
-    updateCrfDescription(state.crf);
-  });
-} else {
-  console.log('DOM ya cargado, inicializando...');
+crfSlider.addEventListener('input', updateCRFDescription);
+
+// Inicializar
+document.addEventListener('DOMContentLoaded', () => {
+  console.log('DOM cargado, inicializando...');
+  updateCRFDescription();
   loadFFmpeg();
-  updateCrfDescription(state.crf);
-}
+});
