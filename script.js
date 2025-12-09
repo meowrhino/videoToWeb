@@ -62,6 +62,37 @@ const state = {
   currentCancelHandler: null
 };
 
+// Formatea tamaño desde KB a cadena MB con dos decimales
+function formatSizeMBFromKB(kb) {
+  if (!kb && kb !== 0) return '';
+  return `${(kb / 1024).toFixed(2)} MB`;
+}
+
+// Limpia estado y DOM de un video
+function cleanupVideo(id) {
+  const index = state.videos.findIndex(v => v.id === id);
+  if (index === -1) return;
+
+  const video = state.videos[index];
+  if (video.webmUrl) {
+    URL.revokeObjectURL(video.webmUrl);
+    debugLog('[cleanupVideo] URL revocada');
+  }
+
+  state.videos.splice(index, 1);
+
+  const card = document.getElementById(`video-${id}`);
+  if (card) {
+    card.remove();
+  }
+
+  updateVideosContainer();
+
+  if (state.videos.length === 0) {
+    videosContainer.classList.remove('visible');
+  }
+}
+
 // Elementos del DOM
 const uploadArea = document.getElementById('uploadArea');
 const fileInput = document.getElementById('fileInput');
@@ -209,32 +240,28 @@ async function convertVideo(videoData) {
   // ============================================================
   // Esto evita el error "already running" que ocurre cuando un worker
   // anterior crashó o quedó en un estado inconsistente
-  if (state.ffmpeg) {
-    debugLog('[convertVideo] Terminando worker anterior...');
-    state.ffmpeg.terminate();
+  if (!state.ffmpeg || !state.ffmpegLoaded) {
+    debugLog('[convertVideo] Creando worker y esperando ready...');
+    state.ffmpeg = new Worker(CONFIG.WORKER_PATH);
     state.ffmpegLoaded = false;
-  }
-  
-  debugLog('[convertVideo] Creando nuevo worker...');
-  state.ffmpeg = new Worker(CONFIG.WORKER_PATH);
-  state.ffmpegLoaded = false;
-  
-  // Esperar a que el worker esté listo
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Timeout esperando worker')), CONFIG.WORKER_READY_TIMEOUT);
-    state.ffmpeg.onmessage = (e) => {
-      if (e.data.type === 'ready') {
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timeout esperando worker')), CONFIG.WORKER_READY_TIMEOUT);
+      state.ffmpeg.onmessage = (e) => {
+        if (e.data.type === 'ready') {
+          clearTimeout(timeout);
+          debugLog('[convertVideo] ✓ Worker listo');
+          state.ffmpegLoaded = true;
+          resolve();
+        }
+      };
+      state.ffmpeg.onerror = (err) => {
         clearTimeout(timeout);
-        debugLog('[convertVideo] ✓ Worker listo');
-        state.ffmpegLoaded = true;
-        resolve();
-      }
-    };
-    state.ffmpeg.onerror = (err) => {
-      clearTimeout(timeout);
-      reject(err);
-    };
-  });
+        reject(err);
+      };
+    });
+  } else {
+    debugLog('[convertVideo] Reutilizando worker ya cargado');
+  }
   
   if (!state.ffmpeg || !state.ffmpegLoaded) {
     console.error('[convertVideo] FFmpeg no está cargado');
@@ -330,6 +357,7 @@ async function convertVideo(videoData) {
         logVideo(videoData.id, 'Cancelando conversión...');
         state.ffmpegLoaded = false;
         state.ffmpeg?.terminate();
+        state.ffmpeg = null;
         reject(new Error('cancelled'));
       };
 
@@ -346,6 +374,13 @@ async function convertVideo(videoData) {
           // Registrar en logs solo algunas líneas de stderr para no saturar
           if (msg.type === 'stderr' && /^(frame=|Input #0|Output #0)/.test(text)) {
             logVideo(videoData.id, text.trim());
+          }
+          // Extraer frame y tamaño parcial
+          const frameMatch = text.match(/frame=\s*(\d+).*size=\s*([\d\.]+)kB/);
+          if (frameMatch) {
+            videoData.currentFrame = parseInt(frameMatch[1]);
+            videoData.currentSizeKB = parseFloat(frameMatch[2]);
+            updateVideoCard(videoData.id);
           }
           // Parsear progreso de FFmpeg (aparece en stderr)
           const progressMatch = text.match(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/);
@@ -477,6 +512,8 @@ async function handleFiles(files) {
       webmUrl: null,
       crf: state.crf,
       logs: [],
+      currentFrame: null,
+      currentSizeKB: null,
       status: 'pending',
       progress: 0,
       metadata
@@ -652,6 +689,12 @@ function updateVideoCard(id) {
       if (video.scaledResolution) {
         statusMessage = `convirtiendo (${video.scaledResolution})... ${video.progress}%`;
       }
+      const extras = [];
+      if (video.currentFrame != null) extras.push(`frame ${video.currentFrame}`);
+      if (video.currentSizeKB != null) extras.push(formatSizeMBFromKB(video.currentSizeKB));
+      if (extras.length) {
+        statusMessage += ` • ${extras.join(' • ')}`;
+      }
       statusText.textContent = statusMessage;
       progressFill.style.width = `${video.progress}%`;
       downloadBtn.disabled = true;
@@ -753,28 +796,7 @@ function removeVideo(id) {
     return;
   }
   
-  // Revocar URL si existe
-  if (video.webmUrl) {
-    URL.revokeObjectURL(video.webmUrl);
-    debugLog('[removeVideo] URL revocada');
-  }
-
-  // Eliminar del estado
-  state.videos.splice(index, 1);
-
-  // Eliminar del DOM
-  const card = document.getElementById(`video-${id}`);
-  if (card) {
-    card.remove();
-  }
-
-  // Actualizar contenedor
-  updateVideosContainer();
-
-  // Ocultar contenedor si no hay videos
-  if (state.videos.length === 0) {
-    videosContainer.classList.remove('visible');
-  }
+  cleanupVideo(id);
 }
 
 // Cancelar conversión en curso
@@ -782,7 +804,7 @@ function cancelVideo(id) {
   const video = state.videos.find(v => v.id === id);
   if (!video) return;
   if (video.status !== 'converting') {
-    removeVideo(id);
+    cleanupVideo(id);
     return;
   }
   logVideo(id, 'Solicitando cancelación...');
@@ -791,8 +813,10 @@ function cancelVideo(id) {
   } else if (state.ffmpeg) {
     state.ffmpeg.terminate();
     state.ffmpegLoaded = false;
+    state.ffmpeg = null;
   }
   updateVideoStatus(id, 'cancelled', 0);
+  cleanupVideo(id);
 }
 
 /**
@@ -886,8 +910,11 @@ function logVideo(id, message) {
   const video = state.videos.find(v => v.id === id);
   if (!video) return;
 
+  // Limitar longitud de cada línea para no saturar UI
+  const maxLen = 180;
+  const safeMessage = message.length > maxLen ? `${message.slice(0, maxLen)}…` : message;
   const timestamp = new Date().toLocaleTimeString('es-ES', { hour12: false });
-  const line = `[${timestamp}] ${message}`;
+  const line = `[${timestamp}] ${safeMessage}`;
   video.logs = video.logs || [];
   video.logs.push(line);
   // Limitar a los últimos 10 mensajes para no crecer sin límite
