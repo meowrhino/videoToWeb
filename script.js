@@ -1,7 +1,52 @@
-// Estado global
+// ============================================================
+// CONFIGURACIÓN DE LA APLICACIÓN
+// ============================================================
+// Puedes modificar estos valores para ajustar el comportamiento del conversor
+
+const CONFIG = {
+  // Resolución máxima permitida (videos más grandes se reducirán automáticamente)
+  // Valores recomendados: 1280x720 (HD), 1920x1080 (Full HD - requiere más memoria)
+  MAX_WIDTH: 1280,
+  MAX_HEIGHT: 720,
+  
+  // Bitrate de video en formato FFmpeg (ej: '500K', '1M', '2M')
+  // Valores más bajos = menos memoria usada, archivos más pequeños, menor calidad
+  // Recomendado: '500K' para 720p, '1M' para 1080p
+  VIDEO_BITRATE: '500K',
+  
+  // CRF por defecto (Constant Rate Factor)
+  // Rango: 15-40. Valores más bajos = mejor calidad, archivos más grandes
+  // Recomendado: 31 para balance calidad/tamaño
+  DEFAULT_CRF: 31,
+  
+  // Codec de video (no cambiar a menos que sepas lo que haces)
+  VIDEO_CODEC: 'libvpx',  // VP8 codec para WebM
+  
+  // Codec de audio (no cambiar a menos que sepas lo que haces)
+  AUDIO_CODEC: 'libopus',  // Opus codec para WebM
+  
+  // Parámetros de optimización de FFmpeg
+  // cpu-used: 0-16, valores más altos = conversión más rápida pero menor calidad
+  // deadline: 'good', 'best', 'realtime'
+  CPU_USED: '5',
+  DEADLINE: 'realtime',
+  AUTO_ALT_REF: '0',
+  
+  // Ruta al worker de FFmpeg
+  WORKER_PATH: 'ffmpeg-lib/ffmpeg-worker-webm.js',
+  
+  // Timeout para operaciones (en milisegundos)
+  WORKER_READY_TIMEOUT: 10000,  // 10 segundos
+  FFMPEG_LOAD_TIMEOUT: 30000     // 30 segundos
+};
+
+// ============================================================
+// ESTADO GLOBAL DE LA APLICACIÓN
+// ============================================================
+
 const state = {
   videos: [],
-  crf: 31,
+  crf: CONFIG.DEFAULT_CRF,
   ffmpeg: null,
   ffmpegLoaded: false,
   isLoadingFFmpeg: false
@@ -35,15 +80,15 @@ async function loadFFmpeg() {
     console.log('[loadFFmpeg] Iniciando carga de FFmpeg.js (compatible con GitHub Pages)...');
     
     // Crear worker de FFmpeg
-    console.log('[loadFFmpeg] Creando Worker desde: ffmpeg-lib/ffmpeg-worker-webm.js');
-    state.ffmpeg = new Worker('ffmpeg-lib/ffmpeg-worker-webm.js');
+    console.log(`[loadFFmpeg] Creando Worker desde: ${CONFIG.WORKER_PATH}`);
+    state.ffmpeg = new Worker(CONFIG.WORKER_PATH);
     
     // Configurar manejadores de mensajes
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         console.error('[loadFFmpeg] Timeout esperando mensaje "ready"');
         reject(new Error('Timeout cargando FFmpeg'));
-      }, 30000); // 30 segundos de timeout
+      }, CONFIG.FFMPEG_LOAD_TIMEOUT);
 
       state.ffmpeg.onmessage = (e) => {
         const msg = e.data;
@@ -129,9 +174,52 @@ async function extractMetadata(file) {
   });
 }
 
-// Convertir video a WebM usando FFmpeg.js
+/**
+ * Convierte un video a formato WebM usando FFmpeg.js
+ * 
+ * Esta función:
+ * 1. Recrea el worker de FFmpeg para cada conversión (evita errores de estado)
+ * 2. Detecta videos de alta resolución y los reduce automáticamente
+ * 3. Mantiene el aspect ratio al escalar
+ * 4. Actualiza el progreso en tiempo real
+ * 5. Maneja errores y limpia recursos
+ * 
+ * @param {Object} videoData - Objeto con información del video a convertir
+ * @param {File} videoData.originalFile - Archivo de video original
+ * @param {Object} videoData.metadata - Metadata del video (width, height, duration)
+ * @param {string} videoData.id - ID único del video
+ */
 async function convertVideo(videoData) {
   console.log('[convertVideo] Iniciando conversión de:', videoData.originalFile.name);
+  
+  // ============================================================
+  // PASO 1: Recrear el worker para cada conversión
+  // ============================================================
+  // Esto evita el error "already running" que ocurre cuando un worker
+  // anterior crashó o quedó en un estado inconsistente
+  if (state.ffmpeg) {
+    console.log('[convertVideo] Terminando worker anterior...');
+    state.ffmpeg.terminate();
+  }
+  
+  console.log('[convertVideo] Creando nuevo worker...');
+  state.ffmpeg = new Worker(CONFIG.WORKER_PATH);
+  
+  // Esperar a que el worker esté listo
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timeout esperando worker')), CONFIG.WORKER_READY_TIMEOUT);
+    state.ffmpeg.onmessage = (e) => {
+      if (e.data.type === 'ready') {
+        clearTimeout(timeout);
+        console.log('[convertVideo] ✓ Worker listo');
+        resolve();
+      }
+    };
+    state.ffmpeg.onerror = (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    };
+  });
   
   if (!state.ffmpeg || !state.ffmpegLoaded) {
     console.error('[convertVideo] FFmpeg no está cargado');
@@ -155,12 +243,16 @@ async function convertVideo(videoData) {
     console.log('[convertVideo] Preparando comando FFmpeg...');
     
     // Detectar si necesitamos reducir la resolución para evitar OOM
-    const maxWidth = 1920;
-    const maxHeight = 1080;
+    // Usando los límites definidos en CONFIG para asegurar que funcione con la memoria limitada de ffmpeg.js
+    const maxWidth = CONFIG.MAX_WIDTH;
+    const maxHeight = CONFIG.MAX_HEIGHT;
     let scaleFilter = null;
     
     if (videoData.metadata.width > maxWidth || videoData.metadata.height > maxHeight) {
-      // Calcular nueva resolución manteniendo aspect ratio
+      // ============================================================
+      // REDUCCIÓN AUTOMÁTICA DE RESOLUCIÓN
+      // ============================================================
+      // Calcular nueva resolución manteniendo aspect ratio para evitar distorsión
       const aspectRatio = videoData.metadata.width / videoData.metadata.height;
       let newWidth, newHeight;
       
@@ -185,15 +277,19 @@ async function convertVideo(videoData) {
       showNotification(`video de alta resolución detectado. reduciendo a ${newWidth}x${newHeight} para optimizar`, 'info');
     }
     
+    // ============================================================
+    // PASO 2: Construir comando FFmpeg
+    // ============================================================
+    // Todos los parámetros vienen de CONFIG para fácil modificación
     const ffmpegArgs = [
       '-i', inputName,
-      '-c:v', 'libvpx',
+      '-c:v', CONFIG.VIDEO_CODEC,
       '-crf', state.crf.toString(),
-      '-b:v', '1M',
-      '-c:a', 'libopus',
-      '-cpu-used', '5',
-      '-deadline', 'realtime',
-      '-auto-alt-ref', '0'
+      '-b:v', CONFIG.VIDEO_BITRATE,
+      '-c:a', CONFIG.AUDIO_CODEC,
+      '-cpu-used', CONFIG.CPU_USED,
+      '-deadline', CONFIG.DEADLINE,
+      '-auto-alt-ref', CONFIG.AUTO_ALT_REF
     ];
     
     // Añadir filtro de escala si es necesario
