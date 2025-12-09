@@ -6,13 +6,13 @@
 const CONFIG = {
   // Resolución máxima permitida (videos más grandes se reducirán automáticamente)
   // Valores recomendados: 1280x720 (HD), 1920x1080 (Full HD - requiere más memoria)
-  MAX_WIDTH: 1920,
-  MAX_HEIGHT: 1080,
+  MAX_WIDTH: 1280,
+  MAX_HEIGHT: 720,
   
   // Bitrate de video en formato FFmpeg (ej: '500K', '1M', '2M')
   // Valores más bajos = menos memoria usada, archivos más pequeños, menor calidad
   // Recomendado: '500K' para 720p, '1M' para 1080p
-  VIDEO_BITRATE: '1M',
+  VIDEO_BITRATE: '500K',
   
   // CRF por defecto (Constant Rate Factor)
   // Rango: 15-40. Valores más bajos = mejor calidad, archivos más grandes
