@@ -23,44 +23,54 @@ const uploadSubtitle = document.getElementById('uploadSubtitle');
 
 // Inicializar FFmpeg.js (versión compatible sin SharedArrayBuffer)
 async function loadFFmpeg() {
-  if (state.ffmpegLoaded || state.isLoadingFFmpeg) return;
+  if (state.ffmpegLoaded || state.isLoadingFFmpeg) {
+    console.log('[loadFFmpeg] FFmpeg ya está cargado o cargándose, saltando...');
+    return;
+  }
 
   state.isLoadingFFmpeg = true;
   updateUploadAreaLoading(true);
 
   try {
-    console.log('Cargando FFmpeg.js (compatible con GitHub Pages)...');
+    console.log('[loadFFmpeg] Iniciando carga de FFmpeg.js (compatible con GitHub Pages)...');
     
     // Crear worker de FFmpeg
+    console.log('[loadFFmpeg] Creando Worker desde: ffmpeg-lib/ffmpeg-worker-webm.js');
     state.ffmpeg = new Worker('ffmpeg-lib/ffmpeg-worker-webm.js');
     
     // Configurar manejadores de mensajes
     await new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
+        console.error('[loadFFmpeg] Timeout esperando mensaje "ready"');
         reject(new Error('Timeout cargando FFmpeg'));
       }, 30000); // 30 segundos de timeout
 
       state.ffmpeg.onmessage = (e) => {
         const msg = e.data;
+        console.log('[loadFFmpeg] Mensaje recibido del worker:', msg.type, msg);
+        
         if (msg.type === 'ready') {
           clearTimeout(timeout);
-          console.log('FFmpeg.js cargado y listo');
+          console.log('[loadFFmpeg] ✓ FFmpeg.js cargado y listo');
           state.ffmpegLoaded = true;
           resolve();
-        } else if (msg.type === 'stdout' || msg.type === 'stderr') {
-          console.log('[FFmpeg]', msg.data);
+        } else if (msg.type === 'stdout') {
+          console.log('[FFmpeg stdout]', msg.data);
+        } else if (msg.type === 'stderr') {
+          console.log('[FFmpeg stderr]', msg.data);
         }
       };
 
       state.ffmpeg.onerror = (error) => {
         clearTimeout(timeout);
+        console.error('[loadFFmpeg] Error en el worker:', error);
         reject(error);
       };
     });
 
     showNotification('ffmpeg cargado correctamente', 'success');
   } catch (error) {
-    console.error('Error cargando FFmpeg:', error);
+    console.error('[loadFFmpeg] ✗ Error cargando FFmpeg:', error);
     showNotification('error al cargar ffmpeg. por favor, recarga la página.', 'error');
     state.ffmpeg = null;
   } finally {
@@ -71,6 +81,7 @@ async function loadFFmpeg() {
 
 // Actualizar área de carga cuando FFmpeg está cargando
 function updateUploadAreaLoading(isLoading) {
+  console.log('[updateUploadAreaLoading]', isLoading ? 'Cargando...' : 'Listo');
   if (isLoading) {
     uploadArea.classList.add('loading');
     uploadTitle.textContent = 'cargando ffmpeg...';
@@ -86,22 +97,26 @@ function updateUploadAreaLoading(isLoading) {
 
 // Extraer metadata del video
 async function extractMetadata(file) {
+  console.log('[extractMetadata] Extrayendo metadata de:', file.name);
   return new Promise((resolve) => {
     const video = document.createElement('video');
     video.preload = 'metadata';
 
     video.onloadedmetadata = () => {
       URL.revokeObjectURL(video.src);
-      resolve({
+      const metadata = {
         duration: video.duration,
         width: video.videoWidth,
         height: video.videoHeight,
         codec: file.type
-      });
+      };
+      console.log('[extractMetadata] Metadata extraída:', metadata);
+      resolve(metadata);
     };
 
     video.onerror = () => {
       URL.revokeObjectURL(video.src);
+      console.warn('[extractMetadata] Error extrayendo metadata, usando valores por defecto');
       resolve({
         duration: 0,
         width: 0,
@@ -116,7 +131,10 @@ async function extractMetadata(file) {
 
 // Convertir video a WebM usando FFmpeg.js
 async function convertVideo(videoData) {
+  console.log('[convertVideo] Iniciando conversión de:', videoData.originalFile.name);
+  
   if (!state.ffmpeg || !state.ffmpegLoaded) {
+    console.error('[convertVideo] FFmpeg no está cargado');
     showNotification('ffmpeg no está cargado', 'error');
     return;
   }
@@ -129,21 +147,40 @@ async function convertVideo(videoData) {
     // Actualizar estado a "convirtiendo"
     updateVideoStatus(videoData.id, 'converting', 0);
 
-    console.log('Leyendo archivo de entrada...');
+    console.log('[convertVideo] Leyendo archivo de entrada...');
     // Leer archivo como ArrayBuffer
     const fileData = await videoData.originalFile.arrayBuffer();
+    console.log('[convertVideo] Archivo leído, tamaño:', fileData.byteLength, 'bytes');
 
-    console.log('Ejecutando conversión...');
+    console.log('[convertVideo] Preparando comando FFmpeg...');
+    const ffmpegArgs = [
+      '-i', inputName,
+      '-c:v', 'libvpx',
+      '-crf', state.crf.toString(),
+      '-b:v', '1M',
+      '-c:a', 'libvorbis',
+      '-cpu-used', '5',
+      '-deadline', 'realtime',
+      '-auto-alt-ref', '0',
+      outputName
+    ];
+    console.log('[convertVideo] Argumentos FFmpeg:', ffmpegArgs.join(' '));
     
     // Enviar comando a FFmpeg worker
     const result = await new Promise((resolve, reject) => {
-      let outputData = null;
       let lastProgress = 0;
+      let hasStarted = false;
 
       worker.onmessage = (e) => {
         const msg = e.data;
+        console.log('[convertVideo] Mensaje del worker:', msg.type);
         
-        if (msg.type === 'stdout') {
+        if (msg.type === 'run') {
+          console.log('[convertVideo] ✓ FFmpeg ha iniciado el trabajo');
+          hasStarted = true;
+        } else if (msg.type === 'stdout') {
+          console.log('[convertVideo stdout]', msg.data);
+          
           // Parsear progreso de FFmpeg
           const progressMatch = msg.data.match(/time=(\d+):(\d+):(\d+)/);
           if (progressMatch && videoData.metadata.duration > 0) {
@@ -155,31 +192,28 @@ async function convertVideo(videoData) {
             
             if (progress !== lastProgress) {
               lastProgress = progress;
+              console.log('[convertVideo] Progreso:', progress + '%');
               updateVideoProgress(videoData.id, progress);
             }
           }
+        } else if (msg.type === 'stderr') {
+          console.log('[convertVideo stderr]', msg.data);
+        } else if (msg.type === 'exit') {
+          console.log('[convertVideo] FFmpeg terminó con código:', msg.data);
         } else if (msg.type === 'done') {
-          outputData = msg.data;
-          resolve(outputData);
+          console.log('[convertVideo] ✓ Trabajo completado, procesando resultado...');
+          console.log('[convertVideo] Resultado recibido:', msg.data);
+          resolve(msg.data);
         } else if (msg.type === 'error') {
+          console.error('[convertVideo] ✗ Error del worker:', msg.data);
           reject(new Error(msg.data));
         }
       };
 
-      // Enviar comando de conversión
+      console.log('[convertVideo] Enviando comando al worker...');
       worker.postMessage({
         type: 'run',
-        arguments: [
-          '-i', inputName,
-          '-c:v', 'libvpx',
-          '-crf', state.crf.toString(),
-          '-b:v', '1M',
-          '-c:a', 'libvorbis',
-          '-cpu-used', '5',
-          '-deadline', 'realtime',
-          '-auto-alt-ref', '0',
-          outputName
-        ],
+        arguments: ffmpegArgs,
         MEMFS: [{
           name: inputName,
           data: new Uint8Array(fileData)
@@ -187,25 +221,37 @@ async function convertVideo(videoData) {
       });
     });
 
-    console.log('Conversión completada, procesando salida...');
+    console.log('[convertVideo] Buscando archivo de salida en resultado...');
+    console.log('[convertVideo] Archivos en MEMFS:', result.MEMFS ? result.MEMFS.map(f => f.name) : 'undefined');
     
     // Buscar el archivo de salida en los resultados
+    if (!result.MEMFS || !Array.isArray(result.MEMFS)) {
+      console.error('[convertVideo] ✗ MEMFS no está definido o no es un array');
+      throw new Error('Resultado inválido: MEMFS no definido');
+    }
+
     const outputFile = result.MEMFS.find(f => f.name === outputName);
     if (!outputFile) {
+      console.error('[convertVideo] ✗ No se encontró el archivo de salida:', outputName);
+      console.error('[convertVideo] Archivos disponibles:', result.MEMFS.map(f => f.name).join(', '));
       throw new Error('No se generó el archivo de salida');
     }
+
+    console.log('[convertVideo] ✓ Archivo de salida encontrado:', outputFile.name, 'tamaño:', outputFile.data.length, 'bytes');
 
     // Crear blob del resultado
     const blob = new Blob([outputFile.data], { type: 'video/webm' });
     const url = URL.createObjectURL(blob);
+    console.log('[convertVideo] ✓ Blob creado, URL:', url);
 
     // Actualizar estado a "completado"
     updateVideoCompleted(videoData.id, blob, url);
 
-    console.log('Video convertido exitosamente');
+    console.log('[convertVideo] ✓ Video convertido exitosamente');
     showNotification(`video convertido: ${videoData.originalFile.name}`, 'success');
   } catch (error) {
-    console.error('Error convirtiendo video:', error);
+    console.error('[convertVideo] ✗ Error convirtiendo video:', error);
+    console.error('[convertVideo] Stack trace:', error.stack);
     updateVideoError(videoData.id, 'error al convertir el video');
     showNotification(`error al convertir: ${videoData.originalFile.name}`, 'error');
   }
@@ -213,26 +259,31 @@ async function convertVideo(videoData) {
 
 // Manejar archivos seleccionados
 async function handleFiles(files) {
-  console.log('Archivos recibidos:', files.length);
+  console.log('[handleFiles] Archivos recibidos:', files.length);
   
-  if (!files || files.length === 0) return;
+  if (!files || files.length === 0) {
+    console.warn('[handleFiles] No se recibieron archivos');
+    return;
+  }
   
   if (!state.ffmpegLoaded) {
+    console.error('[handleFiles] FFmpeg aún no está cargado');
     showNotification('ffmpeg aún se está cargando. por favor, espera un momento.', 'error');
     return;
   }
 
   const videoFiles = Array.from(files).filter(file => file.type.startsWith('video/'));
-  console.log('Archivos de video válidos:', videoFiles.length);
+  console.log('[handleFiles] Archivos de video válidos:', videoFiles.length);
 
   if (videoFiles.length === 0) {
+    console.warn('[handleFiles] No se encontraron archivos de video válidos');
     showNotification('por favor, selecciona archivos de video válidos', 'error');
     return;
   }
 
   // Crear objetos VideoData para cada archivo
   for (const file of videoFiles) {
-    console.log('Procesando archivo:', file.name);
+    console.log('[handleFiles] Procesando archivo:', file.name, 'tipo:', file.type, 'tamaño:', file.size);
     const metadata = await extractMetadata(file);
     const videoData = {
       id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -246,6 +297,7 @@ async function handleFiles(files) {
       metadata
     };
 
+    console.log('[handleFiles] VideoData creado:', videoData.id);
     state.videos.push(videoData);
     renderVideoCard(videoData);
   }
@@ -253,16 +305,20 @@ async function handleFiles(files) {
   updateVideosContainer();
 
   // Convertir videos uno por uno
+  console.log('[handleFiles] Iniciando conversión de', videoFiles.length, 'videos...');
   for (const file of videoFiles) {
     const videoData = state.videos.find(v => v.originalFile === file);
     if (videoData) {
+      console.log('[handleFiles] Convirtiendo:', videoData.id);
       await convertVideo(videoData);
     }
   }
+  console.log('[handleFiles] ✓ Todas las conversiones completadas');
 }
 
 // Actualizar estado del video
 function updateVideoStatus(id, status, progress = 0) {
+  console.log('[updateVideoStatus]', id, 'estado:', status, 'progreso:', progress);
   const video = state.videos.find(v => v.id === id);
   if (video) {
     video.status = status;
@@ -282,6 +338,7 @@ function updateVideoProgress(id, progress) {
 
 // Actualizar video completado
 function updateVideoCompleted(id, blob, url) {
+  console.log('[updateVideoCompleted]', id, 'tamaño blob:', blob.size);
   const video = state.videos.find(v => v.id === id);
   if (video) {
     video.status = 'completed';
@@ -296,6 +353,7 @@ function updateVideoCompleted(id, blob, url) {
 
 // Actualizar video con error
 function updateVideoError(id, errorMessage) {
+  console.log('[updateVideoError]', id, 'error:', errorMessage);
   const video = state.videos.find(v => v.id === id);
   if (video) {
     video.status = 'error';
@@ -306,6 +364,7 @@ function updateVideoError(id, errorMessage) {
 
 // Renderizar tarjeta de video
 function renderVideoCard(videoData) {
+  console.log('[renderVideoCard]', videoData.id);
   const card = document.createElement('div');
   card.className = 'video-card';
   card.id = `video-${videoData.id}`;
@@ -404,6 +463,7 @@ function updateVideosContainer() {
   const totalVideos = state.videos.length;
   const completedVideos = state.videos.filter(v => v.status === 'completed').length;
 
+  console.log('[updateVideosContainer] Total:', totalVideos, 'Completados:', completedVideos);
   videoCount.textContent = `${completedVideos} de ${totalVideos} videos convertidos`;
   
   if (totalVideos > 0) {
@@ -415,25 +475,35 @@ function updateVideosContainer() {
 
 // Descargar video individual
 function downloadVideo(id) {
+  console.log('[downloadVideo]', id);
   const video = state.videos.find(v => v.id === id);
-  if (!video || !video.webmUrl) return;
+  if (!video || !video.webmUrl) {
+    console.error('[downloadVideo] Video no encontrado o sin URL');
+    return;
+  }
 
   const link = document.createElement('a');
   link.href = video.webmUrl;
   link.download = video.originalFile.name.replace(/\.[^/.]+$/, '') + '.webm';
   link.click();
+  console.log('[downloadVideo] Descarga iniciada:', link.download);
 }
 
 // Eliminar video
 function removeVideo(id) {
+  console.log('[removeVideo]', id);
   const index = state.videos.findIndex(v => v.id === id);
-  if (index === -1) return;
+  if (index === -1) {
+    console.error('[removeVideo] Video no encontrado');
+    return;
+  }
 
   const video = state.videos[index];
   
   // Revocar URL si existe
   if (video.webmUrl) {
     URL.revokeObjectURL(video.webmUrl);
+    console.log('[removeVideo] URL revocada');
   }
 
   // Eliminar del estado
@@ -456,9 +526,11 @@ function removeVideo(id) {
 
 // Descargar todos los videos
 async function downloadAll() {
+  console.log('[downloadAll] Iniciando descarga de todos los videos');
   const completedVideos = state.videos.filter(v => v.status === 'completed');
   
   if (completedVideos.length === 0) {
+    console.warn('[downloadAll] No hay videos completados');
     showNotification('no hay videos completados para descargar', 'error');
     return;
   }
@@ -488,6 +560,7 @@ function escapeHtml(text) {
 
 // Mostrar notificación
 function showNotification(message, type = 'info') {
+  console.log('[showNotification]', type, message);
   // Crear elemento de notificación
   const notification = document.createElement('div');
   notification.className = `notification notification-${type}`;
@@ -524,11 +597,19 @@ function updateCRFDescription() {
   }
 
   crfDescription.textContent = description;
+  console.log('[updateCRFDescription] CRF:', crf, '-', description);
 }
 
 // Event Listeners
-uploadArea.addEventListener('click', () => fileInput.click());
-selectBtn.addEventListener('click', () => fileInput.click());
+uploadArea.addEventListener('click', () => {
+  console.log('[Event] Click en uploadArea');
+  fileInput.click();
+});
+
+selectBtn.addEventListener('click', () => {
+  console.log('[Event] Click en selectBtn');
+  fileInput.click();
+});
 
 uploadArea.addEventListener('dragover', (e) => {
   e.preventDefault();
@@ -542,21 +623,30 @@ uploadArea.addEventListener('dragleave', () => {
 uploadArea.addEventListener('drop', (e) => {
   e.preventDefault();
   uploadArea.classList.remove('dragover');
+  console.log('[Event] Drop - archivos:', e.dataTransfer.files.length);
   handleFiles(e.dataTransfer.files);
 });
 
 fileInput.addEventListener('change', (e) => {
+  console.log('[Event] Change en fileInput - archivos:', e.target.files.length);
   handleFiles(e.target.files);
   e.target.value = ''; // Reset input
 });
 
-downloadAllBtn.addEventListener('click', downloadAll);
+downloadAllBtn.addEventListener('click', () => {
+  console.log('[Event] Click en downloadAllBtn');
+  downloadAll();
+});
 
 crfSlider.addEventListener('input', updateCRFDescription);
 
 // Inicializar
 document.addEventListener('DOMContentLoaded', () => {
-  console.log('DOM cargado, inicializando...');
+  console.log('='.repeat(60));
+  console.log('[INIT] DOM cargado, inicializando aplicación...');
+  console.log('[INIT] Navegador:', navigator.userAgent);
+  console.log('[INIT] Soporte Worker:', typeof Worker !== 'undefined');
+  console.log('='.repeat(60));
   updateCRFDescription();
   loadFFmpeg();
 });
