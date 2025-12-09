@@ -158,7 +158,7 @@ async function convertVideo(videoData) {
       '-c:v', 'libvpx',
       '-crf', state.crf.toString(),
       '-b:v', '1M',
-      '-c:a', 'libvorbis',
+      '-c:a', 'libopus',
       '-cpu-used', '5',
       '-deadline', 'realtime',
       '-auto-alt-ref', '0',
