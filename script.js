@@ -21,14 +21,7 @@ const crfDescription = document.getElementById('crfDescription');
 const uploadTitle = document.getElementById('uploadTitle');
 const uploadSubtitle = document.getElementById('uploadSubtitle');
 
-// Utilidad para convertir archivos a Uint8Array
-async function fetchFile(file) {
-  if (file instanceof Uint8Array) return file;
-  if (file instanceof Blob) return new Uint8Array(await file.arrayBuffer());
-  throw new Error('fetchFile: tipo de entrada no soportado');
-}
-
-// Inicializar FFmpeg (versión 0.11.6 compatible con GitHub Pages)
+// Inicializar FFmpeg.js (versión compatible sin SharedArrayBuffer)
 async function loadFFmpeg() {
   if (state.ffmpegLoaded || state.isLoadingFFmpeg) return;
 
@@ -36,38 +29,40 @@ async function loadFFmpeg() {
   updateUploadAreaLoading(true);
 
   try {
-    console.log('Cargando FFmpeg 0.11.6...');
+    console.log('Cargando FFmpeg.js (compatible con GitHub Pages)...');
     
-    // Cargar el script de FFmpeg 0.11.6
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js';
+    // Crear worker de FFmpeg
+    state.ffmpeg = new Worker('ffmpeg-lib/ffmpeg-worker-webm.js');
     
+    // Configurar manejadores de mensajes
     await new Promise((resolve, reject) => {
-      script.onload = resolve;
-      script.onerror = () => reject(new Error('Error cargando FFmpeg script'));
-      document.head.appendChild(script);
+      const timeout = setTimeout(() => {
+        reject(new Error('Timeout cargando FFmpeg'));
+      }, 30000); // 30 segundos de timeout
+
+      state.ffmpeg.onmessage = (e) => {
+        const msg = e.data;
+        if (msg.type === 'ready') {
+          clearTimeout(timeout);
+          console.log('FFmpeg.js cargado y listo');
+          state.ffmpegLoaded = true;
+          resolve();
+        } else if (msg.type === 'stdout' || msg.type === 'stderr') {
+          console.log('[FFmpeg]', msg.data);
+        }
+      };
+
+      state.ffmpeg.onerror = (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      };
     });
 
-    console.log('Script cargado, creando instancia...');
-    
-    // Crear instancia de FFmpeg
-    const { createFFmpeg, fetchFile: ffmpegFetchFile } = FFmpeg;
-    
-    const ffmpeg = createFFmpeg({
-      log: true,
-      corePath: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.10.0/dist/ffmpeg-core.js'
-    });
-
-    console.log('Cargando core de FFmpeg...');
-    await ffmpeg.load();
-
-    state.ffmpeg = ffmpeg;
-    state.ffmpegLoaded = true;
-    console.log('FFmpeg cargado correctamente');
     showNotification('ffmpeg cargado correctamente', 'success');
   } catch (error) {
     console.error('Error cargando FFmpeg:', error);
     showNotification('error al cargar ffmpeg. por favor, recarga la página.', 'error');
+    state.ffmpeg = null;
   } finally {
     state.isLoadingFFmpeg = false;
     updateUploadAreaLoading(false);
@@ -119,62 +114,95 @@ async function extractMetadata(file) {
   });
 }
 
-// Convertir video a WebM
+// Convertir video a WebM usando FFmpeg.js
 async function convertVideo(videoData) {
-  if (!state.ffmpeg) {
+  if (!state.ffmpeg || !state.ffmpegLoaded) {
     showNotification('ffmpeg no está cargado', 'error');
     return;
   }
 
-  const ffmpeg = state.ffmpeg;
-  const inputName = `input_${videoData.id}.${videoData.originalFile.name.split('.').pop()}`;
-  const outputName = `output_${videoData.id}.webm`;
+  const worker = state.ffmpeg;
+  const inputName = `input.${videoData.originalFile.name.split('.').pop()}`;
+  const outputName = 'output.webm';
 
   try {
     // Actualizar estado a "convirtiendo"
     updateVideoStatus(videoData.id, 'converting', 0);
 
-    console.log('Escribiendo archivo de entrada...');
-    // Escribir archivo de entrada usando la API 0.11.6
-    ffmpeg.FS('writeFile', inputName, await fetchFile(videoData.originalFile));
-
-    // Configurar progreso
-    ffmpeg.setProgress(({ ratio }) => {
-      const currentProgress = Math.round(ratio * 100);
-      updateVideoProgress(videoData.id, currentProgress);
-    });
+    console.log('Leyendo archivo de entrada...');
+    // Leer archivo como ArrayBuffer
+    const fileData = await videoData.originalFile.arrayBuffer();
 
     console.log('Ejecutando conversión...');
-    // Ejecutar conversión con parámetros optimizados para VP9
-    await ffmpeg.run(
-      '-i', inputName,
-      '-c:v', 'libvpx-vp9',
-      '-crf', state.crf.toString(),
-      '-b:v', '0',
-      '-c:a', 'libopus',
-      '-cpu-used', '5',
-      '-deadline', 'realtime',
-      outputName
-    );
+    
+    // Enviar comando a FFmpeg worker
+    const result = await new Promise((resolve, reject) => {
+      let outputData = null;
+      let lastProgress = 0;
 
-    console.log('Leyendo archivo de salida...');
-    // Leer archivo de salida
-    const data = ffmpeg.FS('readFile', outputName);
-    const blob = new Blob([data.buffer], { type: 'video/webm' });
+      worker.onmessage = (e) => {
+        const msg = e.data;
+        
+        if (msg.type === 'stdout') {
+          // Parsear progreso de FFmpeg
+          const progressMatch = msg.data.match(/time=(\d+):(\d+):(\d+)/);
+          if (progressMatch && videoData.metadata.duration > 0) {
+            const hours = parseInt(progressMatch[1]);
+            const minutes = parseInt(progressMatch[2]);
+            const seconds = parseInt(progressMatch[3]);
+            const currentTime = hours * 3600 + minutes * 60 + seconds;
+            const progress = Math.min(Math.round((currentTime / videoData.metadata.duration) * 100), 99);
+            
+            if (progress !== lastProgress) {
+              lastProgress = progress;
+              updateVideoProgress(videoData.id, progress);
+            }
+          }
+        } else if (msg.type === 'done') {
+          outputData = msg.data;
+          resolve(outputData);
+        } else if (msg.type === 'error') {
+          reject(new Error(msg.data));
+        }
+      };
+
+      // Enviar comando de conversión
+      worker.postMessage({
+        type: 'run',
+        arguments: [
+          '-i', inputName,
+          '-c:v', 'libvpx',
+          '-crf', state.crf.toString(),
+          '-b:v', '1M',
+          '-c:a', 'libvorbis',
+          '-cpu-used', '5',
+          '-deadline', 'realtime',
+          '-auto-alt-ref', '0',
+          outputName
+        ],
+        MEMFS: [{
+          name: inputName,
+          data: new Uint8Array(fileData)
+        }]
+      });
+    });
+
+    console.log('Conversión completada, procesando salida...');
+    
+    // Buscar el archivo de salida en los resultados
+    const outputFile = result.MEMFS.find(f => f.name === outputName);
+    if (!outputFile) {
+      throw new Error('No se generó el archivo de salida');
+    }
+
+    // Crear blob del resultado
+    const blob = new Blob([outputFile.data], { type: 'video/webm' });
     const url = URL.createObjectURL(blob);
 
     // Actualizar estado a "completado"
     updateVideoCompleted(videoData.id, blob, url);
 
-    // Limpiar archivos temporales
-    try {
-      ffmpeg.FS('unlink', inputName);
-      ffmpeg.FS('unlink', outputName);
-    } catch (e) {
-      console.warn('Error limpiando archivos temporales:', e);
-    }
-
-    console.log('Conversión completada');
+    console.log('Video convertido exitosamente');
     showNotification(`video convertido: ${videoData.originalFile.name}`, 'success');
   } catch (error) {
     console.error('Error convirtiendo video:', error);
