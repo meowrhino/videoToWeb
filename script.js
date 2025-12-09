@@ -153,6 +153,38 @@ async function convertVideo(videoData) {
     console.log('[convertVideo] Archivo leído, tamaño:', fileData.byteLength, 'bytes');
 
     console.log('[convertVideo] Preparando comando FFmpeg...');
+    
+    // Detectar si necesitamos reducir la resolución para evitar OOM
+    const maxWidth = 1920;
+    const maxHeight = 1080;
+    let scaleFilter = null;
+    
+    if (videoData.metadata.width > maxWidth || videoData.metadata.height > maxHeight) {
+      // Calcular nueva resolución manteniendo aspect ratio
+      const aspectRatio = videoData.metadata.width / videoData.metadata.height;
+      let newWidth, newHeight;
+      
+      if (aspectRatio > (maxWidth / maxHeight)) {
+        // Video más ancho, limitar por ancho
+        newWidth = maxWidth;
+        newHeight = Math.round(maxWidth / aspectRatio);
+        // Asegurar que sea par (requerido por VP8)
+        newHeight = newHeight % 2 === 0 ? newHeight : newHeight - 1;
+      } else {
+        // Video más alto, limitar por alto
+        newHeight = maxHeight;
+        newWidth = Math.round(maxHeight * aspectRatio);
+        // Asegurar que sea par (requerido por VP8)
+        newWidth = newWidth % 2 === 0 ? newWidth : newWidth - 1;
+      }
+      
+      scaleFilter = `scale=${newWidth}:${newHeight}`;
+      videoData.scaledResolution = `${newWidth}x${newHeight}`;
+      console.log(`[convertVideo] ⚠️  Video de alta resolución detectado (${videoData.metadata.width}x${videoData.metadata.height})`);
+      console.log(`[convertVideo] 📐 Reduciendo a ${newWidth}x${newHeight} para evitar problemas de memoria`);
+      showNotification(`video de alta resolución detectado. reduciendo a ${newWidth}x${newHeight} para optimizar`, 'info');
+    }
+    
     const ffmpegArgs = [
       '-i', inputName,
       '-c:v', 'libvpx',
@@ -161,9 +193,15 @@ async function convertVideo(videoData) {
       '-c:a', 'libopus',
       '-cpu-used', '5',
       '-deadline', 'realtime',
-      '-auto-alt-ref', '0',
-      outputName
+      '-auto-alt-ref', '0'
     ];
+    
+    // Añadir filtro de escala si es necesario
+    if (scaleFilter) {
+      ffmpegArgs.push('-vf', scaleFilter);
+    }
+    
+    ffmpegArgs.push(outputName);
     console.log('[convertVideo] Argumentos FFmpeg:', ffmpegArgs.join(' '));
     
     // Enviar comando a FFmpeg worker
@@ -433,7 +471,11 @@ function updateVideoCard(id) {
       break;
 
     case 'converting':
-      statusText.textContent = `convirtiendo... ${video.progress}%`;
+      let statusMessage = `convirtiendo... ${video.progress}%`;
+      if (video.scaledResolution) {
+        statusMessage = `convirtiendo (${video.scaledResolution})... ${video.progress}%`;
+      }
+      statusText.textContent = statusMessage;
       progressFill.style.width = `${video.progress}%`;
       downloadBtn.disabled = true;
       break;
