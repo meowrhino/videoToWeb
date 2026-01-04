@@ -11,7 +11,23 @@ const CONFIG = {
   MAX_WIDTH: 1280,
   MAX_HEIGHT: 720,
   
-  // Bitrate de video: en modo CRF puro usar '0' (CQ). Si quieres forzar bitrate, cambia aquí.
+  // Bitrate de video
+  // IMPORTANTE: VP8 (WebM) puede resultar MENOS eficiente que H.264 (MP4) en algunos casos
+  // (p.ej. vídeos de WhatsApp). Si usamos CRF puro (-b:v 0), el .webm puede acabar PESANDO MÁS.
+  // Para evitarlo, activamos "constrained quality": CRF + bitrate objetivo calculado.
+  // (Si quieres volver al modo CQ puro, pon USE_CONSTRAINED_QUALITY = false)
+  USE_CONSTRAINED_QUALITY: true,
+  // Multiplicador de bitrate objetivo respecto al bitrate medio del archivo original.
+  // Se interpola según el CRF (más calidad => más bitrate). Valores conservadores para tender a reducir peso.
+  BITRATE_MULTIPLIER_AT_CRF_MIN: 0.95, // CRF mínimo (más calidad)
+  BITRATE_MULTIPLIER_AT_CRF_MAX: 0.50, // CRF máximo (menos calidad)
+  // Bitrate mínimo para no destrozar vídeos muy cortos / muy comprimidos
+  MIN_VIDEO_BITRATE_K: 300,
+  // Bitrate de audio fijo para evitar que Opus se dispare
+  AUDIO_BITRATE: '96k',
+  // Si el resultado pesa más que el original, reintentar 1 vez bajando bitrate y subiendo CRF.
+  AUTO_RETRY_IF_BIGGER: true,
+  // Modo CQ puro (solo se usa si USE_CONSTRAINED_QUALITY = false)
   VIDEO_BITRATE: '0',
   
   // CRF por defecto (Constant Rate Factor)
@@ -215,6 +231,40 @@ async function extractMetadata(file) {
   });
 }
 
+// ============================================================
+// BITRATE OBJETIVO (para evitar .webm más grandes que el original)
+// ============================================================
+
+function clamp(num, min, max) {
+  return Math.min(Math.max(num, min), max);
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+/**
+ * Calcula un bitrate objetivo (kbps) a partir del tamaño/duración del original y el CRF.
+ * - Si no hay duración fiable, devuelve null (se usará el modo CQ puro).
+ */
+function computeTargetVideoBitrateK(videoData, crfValue) {
+  const duration = videoData?.metadata?.duration;
+  if (!duration || !isFinite(duration) || duration <= 0.25) return null;
+
+  // Bitrate medio total del archivo original (kbps)
+  const originalKbps = (videoData.originalSize * 8) / duration / 1000;
+  if (!isFinite(originalKbps) || originalKbps <= 0) return null;
+
+  // Normalizar CRF dentro de rango
+  const t = clamp((crfValue - CONFIG.CRF_MIN) / (CONFIG.CRF_MAX - CONFIG.CRF_MIN), 0, 1);
+  const mult = lerp(CONFIG.BITRATE_MULTIPLIER_AT_CRF_MIN, CONFIG.BITRATE_MULTIPLIER_AT_CRF_MAX, t);
+  // Aproximación: el original incluye audio; reservamos un "presupuesto" de audio para no pasarnos.
+  const audioBudgetK = 96;
+  const maxVideoK = Math.max(originalKbps - audioBudgetK, CONFIG.MIN_VIDEO_BITRATE_K);
+  const targetK = Math.round(clamp(originalKbps * mult, CONFIG.MIN_VIDEO_BITRATE_K, maxVideoK));
+  return targetK;
+}
+
 /**
  * Convierte un video a formato WebM usando FFmpeg.js
  * 
@@ -322,32 +372,10 @@ async function convertVideo(videoData) {
     }
     
     // ============================================================
-    // PASO 2: Construir comando FFmpeg
+    // PASO 2: Construir + ejecutar comando FFmpeg (con reintento si pesa más)
     // ============================================================
-    // Todos los parámetros vienen de CONFIG para fácil modificación
-    const ffmpegArgs = [
-      '-i', inputName,
-      '-c:v', CONFIG.VIDEO_CODEC,
-      '-crf', crfValue.toString(),
-      '-b:v', CONFIG.VIDEO_BITRATE,
-      '-quality', 'good',
-      '-c:a', CONFIG.AUDIO_CODEC,
-      '-cpu-used', CONFIG.CPU_USED,
-      '-deadline', CONFIG.DEADLINE,
-      '-auto-alt-ref', CONFIG.AUTO_ALT_REF
-    ];
-    
-    // Añadir filtro de escala si es necesario
-    if (scaleFilter) {
-      ffmpegArgs.push('-vf', scaleFilter);
-    }
-    
-    ffmpegArgs.push(outputName);
-    debugLog('[convertVideo] Argumentos FFmpeg:', ffmpegArgs.join(' '));
-    logVideo(videoData.id, `FFmpeg args: ${ffmpegArgs.join(' ')}`);
-    
-    // Enviar comando a FFmpeg worker
-    const result = await new Promise((resolve, reject) => {
+
+    const runFFmpeg = (ffmpegArgs) => new Promise((resolve, reject) => {
       let lastProgress = 0;
       let lastLoggedProgress = 0;
       let hasStarted = false;
@@ -425,35 +453,122 @@ async function convertVideo(videoData) {
       });
     });
 
-    debugLog('[convertVideo] Buscando archivo de salida en resultado...');
-    debugLog('[convertVideo] Archivos en MEMFS:', result.MEMFS ? result.MEMFS.map(f => f.name) : 'undefined');
-    
-    // Buscar el archivo de salida en los resultados
-    if (!result.MEMFS || !Array.isArray(result.MEMFS)) {
-      console.error('[convertVideo] ✗ MEMFS no está definido o no es un array');
-      throw new Error('Resultado inválido: MEMFS no definido');
+    const buildFfmpegArgs = (usedCrf, targetBitrateK) => {
+      const args = [
+        '-i', inputName,
+        '-c:v', CONFIG.VIDEO_CODEC,
+        '-crf', usedCrf.toString(),
+      ];
+
+      // Constrained quality: crf + bitrate objetivo => evita outputs más grandes que el original
+      if (CONFIG.USE_CONSTRAINED_QUALITY && targetBitrateK != null) {
+        const b = `${targetBitrateK}k`;
+        const maxrate = `${Math.round(targetBitrateK * 1.10)}k`;
+        const bufsize = `${Math.round(targetBitrateK * 2)}k`;
+        args.push('-b:v', b, '-maxrate', maxrate, '-bufsize', bufsize);
+      } else {
+        // Modo CQ puro
+        args.push('-b:v', CONFIG.VIDEO_BITRATE);
+      }
+
+      args.push(
+        '-quality', 'good',
+        '-c:a', CONFIG.AUDIO_CODEC,
+        '-b:a', CONFIG.AUDIO_BITRATE,
+        '-cpu-used', CONFIG.CPU_USED,
+        '-deadline', CONFIG.DEADLINE,
+        '-auto-alt-ref', CONFIG.AUTO_ALT_REF
+      );
+
+      if (scaleFilter) {
+        args.push('-vf', scaleFilter);
+      }
+
+      args.push(outputName);
+      return args;
+    };
+
+    let usedCrf = crfValue;
+    let targetBitrateK = (CONFIG.USE_CONSTRAINED_QUALITY)
+      ? computeTargetVideoBitrateK(videoData, usedCrf)
+      : null;
+
+    let chosenBlob = null;
+    let chosenUrl = null;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // Construir args
+      const ffmpegArgs = buildFfmpegArgs(usedCrf, targetBitrateK);
+      debugLog('[convertVideo] Argumentos FFmpeg:', ffmpegArgs.join(' '));
+      logVideo(videoData.id, `FFmpeg args (intento ${attempt + 1}): ${ffmpegArgs.join(' ')}`);
+      if (targetBitrateK != null) {
+        logVideo(videoData.id, `Bitrate objetivo aprox: ${targetBitrateK} kbps`);
+      }
+
+      // Ejecutar
+      const result = await runFFmpeg(ffmpegArgs);
+
+      debugLog('[convertVideo] Buscando archivo de salida en resultado...');
+      debugLog('[convertVideo] Archivos en MEMFS:', result.MEMFS ? result.MEMFS.map(f => f.name) : 'undefined');
+
+      // Buscar el archivo de salida en los resultados
+      if (!result.MEMFS || !Array.isArray(result.MEMFS)) {
+        console.error('[convertVideo] ✗ MEMFS no está definido o no es un array');
+        throw new Error('Resultado inválido: MEMFS no definido');
+      }
+
+      const outputFile = result.MEMFS.find(f => f.name === outputName);
+      if (!outputFile) {
+        console.error('[convertVideo] ✗ No se encontró el archivo de salida:', outputName);
+        console.error('[convertVideo] Archivos disponibles:', result.MEMFS.map(f => f.name).join(', '));
+        throw new Error('No se generó el archivo de salida');
+      }
+
+      debugLog('[convertVideo] ✓ Archivo de salida encontrado:', outputFile.name, 'tamaño:', outputFile.data.length, 'bytes');
+
+      // Crear blob del resultado
+      const blob = new Blob([outputFile.data], { type: 'video/webm' });
+      const webmSizeMB = (blob.size / (1024 * 1024)).toFixed(2);
+      const originalSizeMB = (videoData.originalSize / (1024 * 1024)).toFixed(2);
+      const diffPct = ((blob.size / videoData.originalSize - 1) * 100).toFixed(1);
+
+      logVideo(videoData.id, `Resultado intento ${attempt + 1}: ${webmSizeMB} MB (original ${originalSizeMB} MB, ${diffPct > 0 ? '+' : ''}${diffPct}%)`);
+
+      // Si pesa más, reintentar una vez (si está activado)
+      if (CONFIG.AUTO_RETRY_IF_BIGGER && blob.size > videoData.originalSize && attempt === 0) {
+        logVideo(videoData.id, '⚠️ El .webm pesa más que el original. Reintentando con menor bitrate / menor calidad...');
+        showNotification('el .webm pesa más. reintentando con menor bitrate...', 'info');
+
+        // Ajustes para reintento
+        usedCrf = Math.min(usedCrf + 4, CONFIG.CRF_MAX);
+        if (targetBitrateK != null) {
+          targetBitrateK = Math.max(Math.round(targetBitrateK * 0.80), CONFIG.MIN_VIDEO_BITRATE_K);
+        } else {
+          targetBitrateK = computeTargetVideoBitrateK(videoData, usedCrf);
+        }
+        // Continuar al siguiente intento sin fijar este blob
+        continue;
+      }
+
+      // Aceptar este resultado
+      chosenBlob = blob;
+      chosenUrl = URL.createObjectURL(blob);
+      // Si hubo reintento, actualizar CRF guardado para que la UI sea coherente
+      videoData.crf = usedCrf;
+      break;
     }
 
-    const outputFile = result.MEMFS.find(f => f.name === outputName);
-    if (!outputFile) {
-      console.error('[convertVideo] ✗ No se encontró el archivo de salida:', outputName);
-      console.error('[convertVideo] Archivos disponibles:', result.MEMFS.map(f => f.name).join(', '));
-      throw new Error('No se generó el archivo de salida');
+    if (!chosenBlob || !chosenUrl) {
+      throw new Error('No se pudo generar un resultado válido');
     }
 
-    debugLog('[convertVideo] ✓ Archivo de salida encontrado:', outputFile.name, 'tamaño:', outputFile.data.length, 'bytes');
-
-    // Crear blob del resultado
-    const blob = new Blob([outputFile.data], { type: 'video/webm' });
-    const url = URL.createObjectURL(blob);
-    debugLog('[convertVideo] ✓ Blob creado, URL:', url);
-    const webmSizeMB = (blob.size / (1024 * 1024)).toFixed(2);
+    const finalWebmSizeMB = (chosenBlob.size / (1024 * 1024)).toFixed(2);
     const originalSizeMB = (videoData.originalSize / (1024 * 1024)).toFixed(2);
-    const reduction = ((1 - blob.size / videoData.originalSize) * 100).toFixed(1);
-    logVideo(videoData.id, `Finalizado: ${webmSizeMB} MB (original ${originalSizeMB} MB, -${reduction}%)`);
+    const reduction = ((1 - chosenBlob.size / videoData.originalSize) * 100).toFixed(1);
+    logVideo(videoData.id, `Finalizado: ${finalWebmSizeMB} MB (original ${originalSizeMB} MB, ${reduction > 0 ? '-' : '+'}${Math.abs(parseFloat(reduction)).toFixed(1)}%)`);
 
     // Actualizar estado a "completado"
-    updateVideoCompleted(videoData.id, blob, url);
+    updateVideoCompleted(videoData.id, chosenBlob, chosenUrl);
 
     debugLog('[convertVideo] ✓ Video convertido exitosamente');
     showNotification(`video convertido: ${videoData.originalFile.name}`, 'success');
@@ -707,8 +822,11 @@ function updateVideoCard(id) {
 
     case 'completed':
       const webmSizeMB = (video.webmSize / (1024 * 1024)).toFixed(2);
-      const reduction = ((1 - video.webmSize / video.originalSize) * 100).toFixed(1);
-      statusText.textContent = `completado - ${webmSizeMB} MB (-${reduction}%) - crf ${video.crf}`;
+      const reductionPct = ((1 - video.webmSize / video.originalSize) * 100);
+      const label = reductionPct >= 0
+        ? `-${reductionPct.toFixed(1)}%`
+        : `+${Math.abs(reductionPct).toFixed(1)}%`;
+      statusText.textContent = `completado - ${webmSizeMB} MB (${label}) - crf ${video.crf}`;
       statusText.style.color = '#10b981';
       progressFill.style.width = '100%';
       progressFill.style.backgroundColor = '#10b981';
@@ -976,6 +1094,15 @@ function updateCRFDescription() {
 
   crfDescription.textContent = description;
   debugLog('[updateCRFDescription] CRF:', crf, '-', description);
+
+  // Aplicar el CRF nuevo a los vídeos que todavía no han empezado (pending)
+  // para que el slider tenga efecto real sin tener que re-añadir el archivo.
+  state.videos.forEach(v => {
+    if (v.status === 'pending') {
+      v.crf = crf;
+      updateVideoCard(v.id);
+    }
+  });
 }
 
 // Event Listeners

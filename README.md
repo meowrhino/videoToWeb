@@ -23,7 +23,7 @@ El flujo de trabajo es el siguiente:
 
 1.  **Carga de FFmpeg**: Al iniciar, la aplicación carga `ffmpeg.js` en un **Web Worker**. Esto permite que el proceso de conversión se ejecute en un hilo secundario, evitando que la interfaz de usuario se congele.
 2.  **Selección de Archivos**: El usuario selecciona uno o más archivos de video.
-3.  **Procesamiento en el Worker**: El script principal lee cada video como un `ArrayBuffer` y lo envía al Web Worker junto con los comandos de conversión. Los codecs utilizados son **VP8 para video** y **Opus para audio**, el estándar para WebM.
+3.  **Procesamiento en el Worker**: El script principal lee cada video como un `ArrayBuffer` y lo envía al Web Worker junto con los comandos de conversión. Los codecs utilizados son **VP8 para video** y **Opus para audio**, el estándar para WebM. Para evitar casos en los que un WebM pese más que el MP4 (p.ej. vídeos de WhatsApp), la app usa "constrained quality" (CRF + bitrate objetivo) y reintenta una vez si el resultado sale más grande.
 4.  **Recepción de Resultados**: Una vez que la conversión finaliza, el worker devuelve el video resultante como un `Blob` (un objeto de archivo en memoria).
 5.  **Descarga**: El script crea una URL local para este `Blob` y la usa para iniciar la descarga en el navegador del usuario.
 
