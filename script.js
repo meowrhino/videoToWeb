@@ -7,45 +7,31 @@ const CONFIG = {
   // Mostrar logs en consola (si es false, solo errores críticos van a consola)
   DEBUG_LOGS: false,
   // Resolución máxima permitida (videos más grandes se reducirán automáticamente)
-  // 1280x720 es el límite "seguro" para evitar OOM en WASM; subirlo aumenta el riesgo.
+  // 1280x720 es el límite seguro para evitar OOM en FFmpeg.js
   MAX_WIDTH: 1280,
   MAX_HEIGHT: 720,
   
-  // Bitrate de video
-  // IMPORTANTE: VP8 (WebM) puede resultar MENOS eficiente que H.264 (MP4) en algunos casos
-  // (p.ej. vídeos de WhatsApp). Si usamos CRF puro (-b:v 0), el .webm puede acabar PESANDO MÁS.
-  // Para evitarlo, activamos "constrained quality": CRF + bitrate objetivo calculado.
-  // (Si quieres volver al modo CQ puro, pon USE_CONSTRAINED_QUALITY = false)
-  USE_CONSTRAINED_QUALITY: true,
-  // Multiplicador de bitrate objetivo respecto al bitrate medio del archivo original.
-  // Se interpola según el CRF (más calidad => más bitrate). Valores conservadores para tender a reducir peso.
-  BITRATE_MULTIPLIER_AT_CRF_MIN: 0.95, // CRF mínimo (más calidad)
-  BITRATE_MULTIPLIER_AT_CRF_MAX: 0.50, // CRF máximo (menos calidad)
-  // Bitrate mínimo para no destrozar vídeos muy cortos / muy comprimidos
-  MIN_VIDEO_BITRATE_K: 300,
-  // Bitrate de audio fijo para evitar que Opus se dispare
-  AUDIO_BITRATE: '96k',
-  // Si el resultado pesa más que el original, reintentar 1 vez bajando bitrate y subiendo CRF.
-  AUTO_RETRY_IF_BIGGER: true,
-  // Modo CQ puro (solo se usa si USE_CONSTRAINED_QUALITY = false)
-  VIDEO_BITRATE: '0',
+  // Bitrates máximos por opción (VP8 necesita límite específico para CRF funcional)
+  VIDEO_BITRATE_ALTA: '2500k',     // Alta Calidad (CRF 30)
+  VIDEO_BITRATE_BALANCE: '1500k',  // Balance (CRF 33)
+  VIDEO_BITRATE_MAXIMA: '1000k',   // Máxima Compresión (CRF 37)
   
   // CRF por defecto (Constant Rate Factor)
-  // Rango seguro sugerido para VP8 en WASM (calidad media/alta sin OOM)
-  CRF_MIN: 24,
-  CRF_MAX: 38,
-  DEFAULT_CRF: 30,
+  // 3 opciones: 30 (Alta), 33 (Balance), 37 (Máxima)
+  CRF_MIN: 30,
+  CRF_MAX: 37,
+  DEFAULT_CRF: 33,
   
-  // Codec de video (no cambiar a menos que sepas lo que haces)
-  VIDEO_CODEC: 'libvpx',  // VP8 codec para WebM
+  // Codec de video: VP8 optimizado para compresión
+  VIDEO_CODEC: 'libvpx',  // VP8 codec para WebM (optimizado)
   
   // Codec de audio (no cambiar a menos que sepas lo que haces)
   AUDIO_CODEC: 'libopus',  // Opus codec para WebM
   
-  // Parámetros de optimización de FFmpeg
-  // cpu-used: 0-16, valores más altos = conversión más rápida pero menor calidad
-  // deadline: 'good', 'best', 'realtime'
-  CPU_USED: '4',
+  // Parámetros de optimización de FFmpeg para VP8
+  // cpu-used: 0-16 para VP8 (valores más altos = más rápido pero menor calidad)
+  // speed: 2 es mejor calidad, 4 es más rápido
+  CPU_USED: '2',
   DEADLINE: 'good',
   AUTO_ALT_REF: '1',
   
@@ -117,9 +103,7 @@ const videosContainer = document.getElementById('videosContainer');
 const videosList = document.getElementById('videosList');
 const videoCount = document.getElementById('videoCount');
 const downloadAllBtn = document.getElementById('downloadAllBtn');
-const crfSlider = document.getElementById('crfSlider');
-const crfValue = document.getElementById('crfValue');
-const crfDescription = document.getElementById('crfDescription');
+const qualityButtons = document.querySelectorAll('.quality-btn');
 const uploadTitle = document.getElementById('uploadTitle');
 const uploadSubtitle = document.getElementById('uploadSubtitle');
 
@@ -231,40 +215,6 @@ async function extractMetadata(file) {
   });
 }
 
-// ============================================================
-// BITRATE OBJETIVO (para evitar .webm más grandes que el original)
-// ============================================================
-
-function clamp(num, min, max) {
-  return Math.min(Math.max(num, min), max);
-}
-
-function lerp(a, b, t) {
-  return a + (b - a) * t;
-}
-
-/**
- * Calcula un bitrate objetivo (kbps) a partir del tamaño/duración del original y el CRF.
- * - Si no hay duración fiable, devuelve null (se usará el modo CQ puro).
- */
-function computeTargetVideoBitrateK(videoData, crfValue) {
-  const duration = videoData?.metadata?.duration;
-  if (!duration || !isFinite(duration) || duration <= 0.25) return null;
-
-  // Bitrate medio total del archivo original (kbps)
-  const originalKbps = (videoData.originalSize * 8) / duration / 1000;
-  if (!isFinite(originalKbps) || originalKbps <= 0) return null;
-
-  // Normalizar CRF dentro de rango
-  const t = clamp((crfValue - CONFIG.CRF_MIN) / (CONFIG.CRF_MAX - CONFIG.CRF_MIN), 0, 1);
-  const mult = lerp(CONFIG.BITRATE_MULTIPLIER_AT_CRF_MIN, CONFIG.BITRATE_MULTIPLIER_AT_CRF_MAX, t);
-  // Aproximación: el original incluye audio; reservamos un "presupuesto" de audio para no pasarnos.
-  const audioBudgetK = 96;
-  const maxVideoK = Math.max(originalKbps - audioBudgetK, CONFIG.MIN_VIDEO_BITRATE_K);
-  const targetK = Math.round(clamp(originalKbps * mult, CONFIG.MIN_VIDEO_BITRATE_K, maxVideoK));
-  return targetK;
-}
-
 /**
  * Convierte un video a formato WebM usando FFmpeg.js
  * 
@@ -372,10 +322,50 @@ async function convertVideo(videoData) {
     }
     
     // ============================================================
-    // PASO 2: Construir + ejecutar comando FFmpeg (con reintento si pesa más)
+    // PASO 2: Determinar bitrate máximo según CRF
     // ============================================================
-
-    const runFFmpeg = (ffmpegArgs) => new Promise((resolve, reject) => {
+    // VP8 necesita un bitrate máximo específico para que CRF funcione correctamente
+    let targetBitrate;
+    if (crfValue === CONFIG.CRF_MIN) {
+      targetBitrate = CONFIG.VIDEO_BITRATE_ALTA;
+    } else if (crfValue === CONFIG.DEFAULT_CRF) {
+      targetBitrate = CONFIG.VIDEO_BITRATE_BALANCE;
+    } else {
+      targetBitrate = CONFIG.VIDEO_BITRATE_MAXIMA;
+    }
+    
+    logVideo(videoData.id, `⚡ USANDO CRF ${crfValue} con bitrate máximo ${targetBitrate}`);
+    logVideo(videoData.id, `🎯 CRF configurado: ${crfValue} (menor = mejor calidad)`);
+    
+    // ============================================================
+    // PASO 3: Construir comando FFmpeg
+    // ============================================================
+    // Parámetros optimizados para VP8 con mejor compresión
+    const ffmpegArgs = [
+      '-i', inputName,
+      '-c:v', CONFIG.VIDEO_CODEC,  // libvpx (VP8)
+      '-crf', crfValue.toString(),
+      '-b:v', targetBitrate,  // Bitrate máximo específico por opción
+      '-quality', 'good',
+      '-c:a', CONFIG.AUDIO_CODEC,  // libopus
+      '-cpu-used', CONFIG.CPU_USED,  // 2 = mejor calidad
+      '-deadline', CONFIG.DEADLINE,  // 'good' = calidad decente
+      '-auto-alt-ref', CONFIG.AUTO_ALT_REF,  // 1 = mejor compresión
+      '-lag-in-frames', '25',  // Mejora compresión
+      '-threads', '4'  // Número de threads
+    ];
+    
+    // Añadir filtro de escala si es necesario
+    if (scaleFilter) {
+      ffmpegArgs.push('-vf', scaleFilter);
+    }
+    
+    ffmpegArgs.push(outputName);
+    debugLog('[convertVideo] Argumentos FFmpeg:', ffmpegArgs.join(' '));
+    logVideo(videoData.id, `FFmpeg args: ${ffmpegArgs.join(' ')}`);
+    
+    // Enviar comando a FFmpeg worker
+    const result = await new Promise((resolve, reject) => {
       let lastProgress = 0;
       let lastLoggedProgress = 0;
       let hasStarted = false;
@@ -453,122 +443,39 @@ async function convertVideo(videoData) {
       });
     });
 
-    const buildFfmpegArgs = (usedCrf, targetBitrateK) => {
-      const args = [
-        '-i', inputName,
-        '-c:v', CONFIG.VIDEO_CODEC,
-        '-crf', usedCrf.toString(),
-      ];
-
-      // Constrained quality: crf + bitrate objetivo => evita outputs más grandes que el original
-      if (CONFIG.USE_CONSTRAINED_QUALITY && targetBitrateK != null) {
-        const b = `${targetBitrateK}k`;
-        const maxrate = `${Math.round(targetBitrateK * 1.10)}k`;
-        const bufsize = `${Math.round(targetBitrateK * 2)}k`;
-        args.push('-b:v', b, '-maxrate', maxrate, '-bufsize', bufsize);
-      } else {
-        // Modo CQ puro
-        args.push('-b:v', CONFIG.VIDEO_BITRATE);
-      }
-
-      args.push(
-        '-quality', 'good',
-        '-c:a', CONFIG.AUDIO_CODEC,
-        '-b:a', CONFIG.AUDIO_BITRATE,
-        '-cpu-used', CONFIG.CPU_USED,
-        '-deadline', CONFIG.DEADLINE,
-        '-auto-alt-ref', CONFIG.AUTO_ALT_REF
-      );
-
-      if (scaleFilter) {
-        args.push('-vf', scaleFilter);
-      }
-
-      args.push(outputName);
-      return args;
-    };
-
-    let usedCrf = crfValue;
-    let targetBitrateK = (CONFIG.USE_CONSTRAINED_QUALITY)
-      ? computeTargetVideoBitrateK(videoData, usedCrf)
-      : null;
-
-    let chosenBlob = null;
-    let chosenUrl = null;
-
-    for (let attempt = 0; attempt < 2; attempt++) {
-      // Construir args
-      const ffmpegArgs = buildFfmpegArgs(usedCrf, targetBitrateK);
-      debugLog('[convertVideo] Argumentos FFmpeg:', ffmpegArgs.join(' '));
-      logVideo(videoData.id, `FFmpeg args (intento ${attempt + 1}): ${ffmpegArgs.join(' ')}`);
-      if (targetBitrateK != null) {
-        logVideo(videoData.id, `Bitrate objetivo aprox: ${targetBitrateK} kbps`);
-      }
-
-      // Ejecutar
-      const result = await runFFmpeg(ffmpegArgs);
-
-      debugLog('[convertVideo] Buscando archivo de salida en resultado...');
-      debugLog('[convertVideo] Archivos en MEMFS:', result.MEMFS ? result.MEMFS.map(f => f.name) : 'undefined');
-
-      // Buscar el archivo de salida en los resultados
-      if (!result.MEMFS || !Array.isArray(result.MEMFS)) {
-        console.error('[convertVideo] ✗ MEMFS no está definido o no es un array');
-        throw new Error('Resultado inválido: MEMFS no definido');
-      }
-
-      const outputFile = result.MEMFS.find(f => f.name === outputName);
-      if (!outputFile) {
-        console.error('[convertVideo] ✗ No se encontró el archivo de salida:', outputName);
-        console.error('[convertVideo] Archivos disponibles:', result.MEMFS.map(f => f.name).join(', '));
-        throw new Error('No se generó el archivo de salida');
-      }
-
-      debugLog('[convertVideo] ✓ Archivo de salida encontrado:', outputFile.name, 'tamaño:', outputFile.data.length, 'bytes');
-
-      // Crear blob del resultado
-      const blob = new Blob([outputFile.data], { type: 'video/webm' });
-      const webmSizeMB = (blob.size / (1024 * 1024)).toFixed(2);
-      const originalSizeMB = (videoData.originalSize / (1024 * 1024)).toFixed(2);
-      const diffPct = ((blob.size / videoData.originalSize - 1) * 100).toFixed(1);
-
-      logVideo(videoData.id, `Resultado intento ${attempt + 1}: ${webmSizeMB} MB (original ${originalSizeMB} MB, ${diffPct > 0 ? '+' : ''}${diffPct}%)`);
-
-      // Si pesa más, reintentar una vez (si está activado)
-      if (CONFIG.AUTO_RETRY_IF_BIGGER && blob.size > videoData.originalSize && attempt === 0) {
-        logVideo(videoData.id, '⚠️ El .webm pesa más que el original. Reintentando con menor bitrate / menor calidad...');
-        showNotification('el .webm pesa más. reintentando con menor bitrate...', 'info');
-
-        // Ajustes para reintento
-        usedCrf = Math.min(usedCrf + 4, CONFIG.CRF_MAX);
-        if (targetBitrateK != null) {
-          targetBitrateK = Math.max(Math.round(targetBitrateK * 0.80), CONFIG.MIN_VIDEO_BITRATE_K);
-        } else {
-          targetBitrateK = computeTargetVideoBitrateK(videoData, usedCrf);
-        }
-        // Continuar al siguiente intento sin fijar este blob
-        continue;
-      }
-
-      // Aceptar este resultado
-      chosenBlob = blob;
-      chosenUrl = URL.createObjectURL(blob);
-      // Si hubo reintento, actualizar CRF guardado para que la UI sea coherente
-      videoData.crf = usedCrf;
-      break;
+    debugLog('[convertVideo] Buscando archivo de salida en resultado...');
+    debugLog('[convertVideo] Archivos en MEMFS:', result.MEMFS ? result.MEMFS.map(f => f.name) : 'undefined');
+    
+    // Buscar el archivo de salida en los resultados
+    if (!result.MEMFS || !Array.isArray(result.MEMFS)) {
+      console.error('[convertVideo] ✗ MEMFS no está definido o no es un array');
+      throw new Error('Resultado inválido: MEMFS no definido');
     }
 
-    if (!chosenBlob || !chosenUrl) {
-      throw new Error('No se pudo generar un resultado válido');
+    const outputFile = result.MEMFS.find(f => f.name === outputName);
+    if (!outputFile) {
+      console.error('[convertVideo] ✗ No se encontró el archivo de salida:', outputName);
+      console.error('[convertVideo] Archivos disponibles:', result.MEMFS.map(f => f.name).join(', '));
+      throw new Error('No se generó el archivo de salida');
     }
 
-    const finalWebmSizeMB = (chosenBlob.size / (1024 * 1024)).toFixed(2);
+    debugLog('[convertVideo] ✓ Archivo de salida encontrado:', outputFile.name, 'tamaño:', outputFile.data.length, 'bytes');
+
+    // Crear blob del resultado
+    const blob = new Blob([outputFile.data], { type: 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    debugLog('[convertVideo] ✓ Blob creado, URL:', url);
+    const webmSizeMB = (blob.size / (1024 * 1024)).toFixed(2);
     const originalSizeMB = (videoData.originalSize / (1024 * 1024)).toFixed(2);
-    const reduction = ((1 - chosenBlob.size / videoData.originalSize) * 100).toFixed(1);
-    logVideo(videoData.id, `Finalizado: ${finalWebmSizeMB} MB (original ${originalSizeMB} MB, ${reduction > 0 ? '-' : '+'}${Math.abs(parseFloat(reduction)).toFixed(1)}%)`);
+    const reduction = ((1 - blob.size / videoData.originalSize) * 100).toFixed(1);
+    const bitrateKbps = Math.round((blob.size * 8) / (videoData.metadata.duration * 1000));
+    logVideo(videoData.id, `✅ COMPLETADO - CRF ${videoData.crf}`);
+    logVideo(videoData.id, `📊 Bitrate resultante: ${bitrateKbps} kbps`);
+    logVideo(videoData.id, `💾 Tamaño: ${webmSizeMB} MB (original ${originalSizeMB} MB, -${reduction}%)`);
+    debugLog('[convertVideo] Bitrate calculado:', bitrateKbps, 'kbps');
 
     // Actualizar estado a "completado"
-    updateVideoCompleted(videoData.id, chosenBlob, chosenUrl);
+    updateVideoCompleted(videoData.id, blob, url);
 
     debugLog('[convertVideo] ✓ Video convertido exitosamente');
     showNotification(`video convertido: ${videoData.originalFile.name}`, 'success');
@@ -619,7 +526,7 @@ async function handleFiles(files) {
     debugLog('[handleFiles] Procesando archivo:', file.name, 'tipo:', file.type, 'tamaño:', file.size);
     const metadata = await extractMetadata(file);
     const videoData = {
-      id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      id: `${file.name}_crf${state.crf}_${Date.now()}`,
       originalFile: file,
       originalSize: file.size,
       webmBlob: null,
@@ -822,11 +729,8 @@ function updateVideoCard(id) {
 
     case 'completed':
       const webmSizeMB = (video.webmSize / (1024 * 1024)).toFixed(2);
-      const reductionPct = ((1 - video.webmSize / video.originalSize) * 100);
-      const label = reductionPct >= 0
-        ? `-${reductionPct.toFixed(1)}%`
-        : `+${Math.abs(reductionPct).toFixed(1)}%`;
-      statusText.textContent = `completado - ${webmSizeMB} MB (${label}) - crf ${video.crf}`;
+      const reduction = ((1 - video.webmSize / video.originalSize) * 100).toFixed(1);
+      statusText.textContent = `completado - ${webmSizeMB} MB (-${reduction}%) - crf ${video.crf}`;
       statusText.style.color = '#10b981';
       progressFill.style.width = '100%';
       progressFill.style.backgroundColor = '#10b981';
@@ -1071,38 +975,16 @@ function showNotification(message, type = 'info') {
   }, 3000);
 }
 
-// Actualizar descripción del CRF
-function updateCRFDescription() {
-  const crf = parseInt(crfSlider.value);
-  crfValue.textContent = crf;
+// Actualizar CRF desde botones
+function updateCRFFromButton(button) {
+  // Remover active de todos los botones
+  qualityButtons.forEach(btn => btn.classList.remove('active'));
+  // Agregar active al botón clickeado
+  button.classList.add('active');
+  // Actualizar CRF
+  const crf = parseInt(button.dataset.crf);
   state.crf = crf;
-
-  let description = '';
-  const nearLossless = CONFIG.CRF_MIN + 2;
-  const highQuality = CONFIG.CRF_MIN + 6;
-  const balanced = CONFIG.CRF_MIN + 10;
-
-  if (crf <= nearLossless) {
-    description = 'calidad muy alta - archivos más pesados';
-  } else if (crf <= highQuality) {
-    description = 'calidad alta - buen balance';
-  } else if (crf <= balanced) {
-    description = 'calidad media - archivos más pequeños';
-  } else {
-    description = 'calidad baja - archivos muy pequeños';
-  }
-
-  crfDescription.textContent = description;
-  debugLog('[updateCRFDescription] CRF:', crf, '-', description);
-
-  // Aplicar el CRF nuevo a los vídeos que todavía no han empezado (pending)
-  // para que el slider tenga efecto real sin tener que re-añadir el archivo.
-  state.videos.forEach(v => {
-    if (v.status === 'pending') {
-      v.crf = crf;
-      updateVideoCard(v.id);
-    }
-  });
+  debugLog('[updateCRFFromButton] CRF seleccionado:', crf);
 }
 
 // Event Listeners
@@ -1143,7 +1025,10 @@ downloadAllBtn.addEventListener('click', () => {
   downloadAll();
 });
 
-  crfSlider.addEventListener('input', updateCRFDescription);
+  // Event listeners para botones de calidad
+  qualityButtons.forEach(button => {
+    button.addEventListener('click', () => updateCRFFromButton(button));
+  });
 
 // Inicializar
 document.addEventListener('DOMContentLoaded', () => {
@@ -1152,10 +1037,13 @@ document.addEventListener('DOMContentLoaded', () => {
   debugLog('[INIT] Navegador:', navigator.userAgent);
   debugLog('[INIT] Soporte Worker:', typeof Worker !== 'undefined');
   debugLog('='.repeat(60));
-  crfSlider.min = CONFIG.CRF_MIN;
-  crfSlider.max = CONFIG.CRF_MAX;
-  crfSlider.value = CONFIG.DEFAULT_CRF;
-  state.crf = CONFIG.DEFAULT_CRF;
-  updateCRFDescription();
+  // Inicializar CRF desde botón activo
+  const activeButton = document.querySelector('.quality-btn.active');
+  if (activeButton) {
+    state.crf = parseInt(activeButton.dataset.crf);
+  } else {
+    state.crf = CONFIG.DEFAULT_CRF;
+  }
+  debugLog('[INIT] CRF inicial:', state.crf);
   loadFFmpeg();
 });
