@@ -1,26 +1,12 @@
 // ============================================================
-// CONFIGURACIÓN DE LA APLICACIÓN
+// CONFIGURACIÓN GLOBAL DE LA APLICACIÓN
 // ============================================================
-// Puedes modificar estos valores para ajustar el comportamiento del conversor
+// Puedes modificar estos valores para ajustar el comportamiento del conversor.
+// Los valores específicos por modo (resolución, CRF, bitrates) viven en PRESETS.
 
 const CONFIG = {
   // Mostrar logs en consola (si es false, solo errores críticos van a consola)
   DEBUG_LOGS: false,
-  // Resolución máxima permitida (videos más grandes se reducirán automáticamente)
-  // 1280x720 es el límite seguro para evitar OOM en FFmpeg.js
-  MAX_WIDTH: 1280,
-  MAX_HEIGHT: 720,
-  
-  // Bitrates máximos por opción (VP8 necesita límite específico para CRF funcional)
-  VIDEO_BITRATE_ALTA: '2500k',     // Alta Calidad (CRF 30)
-  VIDEO_BITRATE_BALANCE: '1500k',  // Balance (CRF 33)
-  VIDEO_BITRATE_MAXIMA: '1000k',   // Máxima Compresión (CRF 37)
-  
-  // CRF por defecto (Constant Rate Factor)
-  // 3 opciones: 30 (Alta), 33 (Balance), 37 (Máxima)
-  CRF_MIN: 30,
-  CRF_MAX: 37,
-  DEFAULT_CRF: 33,
   
   // Codec de video: VP8 optimizado para compresión
   VIDEO_CODEC: 'libvpx',  // VP8 codec para WebM (optimizado)
@@ -43,6 +29,54 @@ const CONFIG = {
   FFMPEG_LOAD_TIMEOUT: 30000     // 30 segundos
 };
 
+// ============================================================
+// PRESETS (LOS 3 MODOS): cada modo define resolución, CRF, bitrates, etc.
+// ============================================================
+// Nota: mantenemos 720p como techo "seguro" en ffmpeg.wasm para evitar OOM.
+// Si quieres permitir 1080p, tendrás que asumir más riesgo de memoria.
+// maxWidth/maxHeight se usan para el escalado automático.
+const PRESETS = {
+  high: {
+    id: 'high',
+    label: 'Alta resolución',
+    description: 'Hasta 720p · más calidad',
+    maxWidth: 1280,
+    maxHeight: 720,
+    crf: 28,
+    videoBitrate: '4000k',
+    audioBitrate: '128k',
+    fps: null
+  },
+  medium: {
+    id: 'medium',
+    label: 'Balance',
+    description: 'Recomendado · hasta 720p',
+    maxWidth: 1280,
+    maxHeight: 720,
+    crf: 33,
+    videoBitrate: '1500k',
+    audioBitrate: '128k',
+    fps: null
+  },
+  low: {
+    id: 'low',
+    label: 'Baja resolución',
+    description: 'Hasta 480p · pesa menos',
+    maxWidth: 854,
+    maxHeight: 480,
+    crf: 37,
+    videoBitrate: '1000k',
+    audioBitrate: '96k',
+    fps: 30
+  }
+};
+
+function getActivePreset() {
+  return PRESETS[state.mode] || PRESETS.medium;
+}
+
+
+
 // Utilidad para log condicionado
 function debugLog(...args) {
   if (CONFIG.DEBUG_LOGS) {
@@ -56,7 +90,8 @@ function debugLog(...args) {
 
 const state = {
   videos: [],
-  crf: CONFIG.DEFAULT_CRF,
+  mode: 'medium',
+  crf: PRESETS.medium.crf,
   ffmpeg: null,
   ffmpegLoaded: false,
   isLoadingFFmpeg: false,
@@ -232,8 +267,11 @@ async function extractMetadata(file) {
  */
 async function convertVideo(videoData) {
   debugLog('[convertVideo] Iniciando conversión de:', videoData.originalFile.name);
-  logVideo(videoData.id, `Iniciando conversión (CRF ${videoData.crf})`);
+  const presetAtStart = PRESETS[videoData.presetId] ? PRESETS[videoData.presetId] : PRESETS.medium;
+  const preset = presetAtStart;
+  logVideo(videoData.id, `Iniciando conversión · ${presetAtStart.label} (CRF ${videoData.crf})`);
   state.currentVideoId = videoData.id;
+  const durationSec = Number(videoData.metadata?.duration || 0);
   
   // ============================================================
   // PASO 1: Recrear el worker para cada conversión
@@ -286,9 +324,9 @@ async function convertVideo(videoData) {
     debugLog('[convertVideo] Preparando comando FFmpeg...');
     
     // Detectar si necesitamos reducir la resolución para evitar OOM
-    // Usando los límites definidos en CONFIG para asegurar que funcione con la memoria limitada de ffmpeg.js
-    const maxWidth = CONFIG.MAX_WIDTH;
-    const maxHeight = CONFIG.MAX_HEIGHT;
+    // Usando los límites definidos por el preset seleccionado
+    const maxWidth = preset.maxWidth ?? PRESETS.medium.maxWidth;
+    const maxHeight = preset.maxHeight ?? PRESETS.medium.maxHeight;
     let scaleFilter = null;
     
     if (videoData.metadata.width > maxWidth || videoData.metadata.height > maxHeight) {
@@ -322,19 +360,12 @@ async function convertVideo(videoData) {
     }
     
     // ============================================================
-    // PASO 2: Determinar bitrate máximo según CRF
+    // PASO 2: Determinar bitrate máximo según preset
     // ============================================================
     // VP8 necesita un bitrate máximo específico para que CRF funcione correctamente
-    let targetBitrate;
-    if (crfValue === CONFIG.CRF_MIN) {
-      targetBitrate = CONFIG.VIDEO_BITRATE_ALTA;
-    } else if (crfValue === CONFIG.DEFAULT_CRF) {
-      targetBitrate = CONFIG.VIDEO_BITRATE_BALANCE;
-    } else {
-      targetBitrate = CONFIG.VIDEO_BITRATE_MAXIMA;
-    }
+    const targetBitrate = preset.videoBitrate ?? PRESETS.medium.videoBitrate;
     
-    logVideo(videoData.id, `⚡ USANDO CRF ${crfValue} con bitrate máximo ${targetBitrate}`);
+    logVideo(videoData.id, `⚡ USANDO CRF ${crfValue} con bitrate ${targetBitrate}`);
     logVideo(videoData.id, `🎯 CRF configurado: ${crfValue} (menor = mejor calidad)`);
     
     // ============================================================
@@ -345,9 +376,10 @@ async function convertVideo(videoData) {
       '-i', inputName,
       '-c:v', CONFIG.VIDEO_CODEC,  // libvpx (VP8)
       '-crf', crfValue.toString(),
-      '-b:v', targetBitrate,  // Bitrate máximo específico por opción
+      '-b:v', targetBitrate,  // Bitrate del preset
       '-quality', 'good',
       '-c:a', CONFIG.AUDIO_CODEC,  // libopus
+      '-b:a', preset.audioBitrate,
       '-cpu-used', CONFIG.CPU_USED,  // 2 = mejor calidad
       '-deadline', CONFIG.DEADLINE,  // 'good' = calidad decente
       '-auto-alt-ref', CONFIG.AUTO_ALT_REF,  // 1 = mejor compresión
@@ -360,6 +392,11 @@ async function convertVideo(videoData) {
       ffmpegArgs.push('-vf', scaleFilter);
     }
     
+    // Limitar FPS (solo en algunos modos)
+    if (preset.fps) {
+      ffmpegArgs.push('-r', String(preset.fps));
+    }
+
     ffmpegArgs.push(outputName);
     debugLog('[convertVideo] Argumentos FFmpeg:', ffmpegArgs.join(' '));
     logVideo(videoData.id, `FFmpeg args: ${ffmpegArgs.join(' ')}`);
@@ -402,12 +439,12 @@ async function convertVideo(videoData) {
           }
           // Parsear progreso de FFmpeg (aparece en stderr)
           const progressMatch = text.match(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/);
-          if (progressMatch && videoData.metadata.duration > 0) {
+          if (progressMatch && durationSec > 0) {
             const hours = parseInt(progressMatch[1]);
             const minutes = parseInt(progressMatch[2]);
             const seconds = parseFloat(progressMatch[3]);
             const currentTime = hours * 3600 + minutes * 60 + seconds;
-            const progress = Math.min(Math.round((currentTime / videoData.metadata.duration) * 100), 99);
+            const progress = Math.min(Math.round((currentTime / durationSec) * 100), 99);
             
             if (progress !== lastProgress) {
               lastProgress = progress;
@@ -433,6 +470,9 @@ async function convertVideo(videoData) {
       };
 
       debugLog('[convertVideo] Enviando comando al worker...');
+      // Guardar args/preset usados para reproducibilidad
+      videoData.presetUsed = { ...preset };
+      videoData.ffmpegArgsUsed = [...ffmpegArgs];
       worker.postMessage({
         type: 'run',
         arguments: ffmpegArgs,
@@ -468,9 +508,11 @@ async function convertVideo(videoData) {
     const webmSizeMB = (blob.size / (1024 * 1024)).toFixed(2);
     const originalSizeMB = (videoData.originalSize / (1024 * 1024)).toFixed(2);
     const reduction = ((1 - blob.size / videoData.originalSize) * 100).toFixed(1);
-    const bitrateKbps = Math.round((blob.size * 8) / (videoData.metadata.duration * 1000));
+    const bitrateKbps = durationSec > 0 ? Math.round((blob.size * 8) / (durationSec * 1000)) : null;
     logVideo(videoData.id, `✅ COMPLETADO - CRF ${videoData.crf}`);
-    logVideo(videoData.id, `📊 Bitrate resultante: ${bitrateKbps} kbps`);
+    if (bitrateKbps !== null) {
+      logVideo(videoData.id, `📊 Bitrate resultante: ${bitrateKbps} kbps`);
+    }
     logVideo(videoData.id, `💾 Tamaño: ${webmSizeMB} MB (original ${originalSizeMB} MB, -${reduction}%)`);
     debugLog('[convertVideo] Bitrate calculado:', bitrateKbps, 'kbps');
 
@@ -526,7 +568,8 @@ async function handleFiles(files) {
     debugLog('[handleFiles] Procesando archivo:', file.name, 'tipo:', file.type, 'tamaño:', file.size);
     const metadata = await extractMetadata(file);
     const videoData = {
-      id: `${file.name}_crf${state.crf}_${Date.now()}`,
+      id: `${file.name}_mode${state.mode}_crf${state.crf}_${Date.now()}`,
+      presetId: state.mode,
       originalFile: file,
       originalSize: file.size,
       webmBlob: null,
@@ -981,10 +1024,15 @@ function updateCRFFromButton(button) {
   qualityButtons.forEach(btn => btn.classList.remove('active'));
   // Agregar active al botón clickeado
   button.classList.add('active');
-  // Actualizar CRF
-  const crf = parseInt(button.dataset.crf);
-  state.crf = crf;
-  debugLog('[updateCRFFromButton] CRF seleccionado:', crf);
+
+  // Actualizar modo/preset (data-mode) y CRF asociado
+  const mode = (button.dataset.mode || 'medium').toLowerCase();
+  state.mode = PRESETS[mode] ? mode : 'medium';
+
+  const preset = getActivePreset();
+  state.crf = preset.crf;
+
+  debugLog('[updateCRFFromButton] Modo seleccionado:', state.mode, '| CRF:', state.crf);
 }
 
 // Event Listeners
@@ -1037,13 +1085,16 @@ document.addEventListener('DOMContentLoaded', () => {
   debugLog('[INIT] Navegador:', navigator.userAgent);
   debugLog('[INIT] Soporte Worker:', typeof Worker !== 'undefined');
   debugLog('='.repeat(60));
-  // Inicializar CRF desde botón activo
+  // Inicializar modo/CRF desde botón activo
   const activeButton = document.querySelector('.quality-btn.active');
   if (activeButton) {
-    state.crf = parseInt(activeButton.dataset.crf);
+    state.mode = (activeButton.dataset.mode || 'medium').toLowerCase();
   } else {
-    state.crf = CONFIG.DEFAULT_CRF;
+    state.mode = 'medium';
   }
-  debugLog('[INIT] CRF inicial:', state.crf);
+  const preset = PRESETS[state.mode] ? PRESETS[state.mode] : PRESETS.medium;
+  state.mode = preset.id;
+  state.crf = preset.crf;
+  debugLog('[INIT] Modo inicial:', state.mode, '| CRF:', state.crf);
   loadFFmpeg();
 });

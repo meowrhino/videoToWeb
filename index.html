@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>videoToLilVideo - Compresor de Video MP4</title>
+  <title>video a webM</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -23,17 +23,17 @@
 
     <!-- Controls -->
     <div class="quality-buttons">
-      <button class="quality-btn" data-crf="30">
-        <strong>Alta Calidad</strong>
-        <small>Videos con movimiento</small>
+      <button class="quality-btn" data-mode="high">
+        <strong>alta resolución</strong>
+        <small>más peso más calidad</small>
       </button>
-      <button class="quality-btn active" data-crf="33">
-        <strong>Balance</strong>
-        <small>Recomendado</small>
+      <button class="quality-btn active" data-mode="medium">
+        <strong>por defecto</strong>
+        <small>recomendado</small>
       </button>
-      <button class="quality-btn" data-crf="37">
-        <strong>Máx. Compresión</strong>
-        <small>Videos estáticos/largos</small>
+      <button class="quality-btn" data-mode="low">
+        <strong>baja resolución</strong>
+        <small>menos peso menos calidad</small>
       </button>
     </div>
 
