@@ -26,16 +26,13 @@ body {
   color: var(--text);
   line-height: 1.6;
   min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 2rem 1rem;
 }
 
 .container {
   width: 100%;
   max-width: 960px;
-  margin: 0 auto;
+  margin: 2rem auto;
 }
 
 /* Upload Area */
@@ -398,6 +395,10 @@ body {
 
 .notification-info {
   border-left: 4px solid var(--primary);
+}
+
+.notification-warning {
+  border-left: 4px solid var(--warning);
 }
 
 /* Responsive */

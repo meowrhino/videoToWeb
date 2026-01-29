@@ -17,7 +17,7 @@ const CONFIG = {
   // Parámetros de optimización de FFmpeg para VP8
   // cpu-used: 0-16 para VP8 (valores más altos = más rápido pero menor calidad)
   // speed: 2 es mejor calidad, 4 es más rápido
-  CPU_USED: '2',
+  CPU_USED: '4',
   DEADLINE: 'good',
   AUTO_ALT_REF: '1',
   
@@ -42,8 +42,8 @@ const PRESETS = {
     description: 'Hasta 720p · más calidad',
     maxWidth: 1280,
     maxHeight: 720,
-    crf: 28,
-    videoBitrate: '4000k',
+    crf: 10,
+    videoBitrate: '2500k',
     audioBitrate: '128k',
     fps: null
   },
@@ -53,8 +53,8 @@ const PRESETS = {
     description: 'Recomendado · hasta 720p',
     maxWidth: 1280,
     maxHeight: 720,
-    crf: 33,
-    videoBitrate: '1500k',
+    crf: 20,
+    videoBitrate: '1200k',
     audioBitrate: '128k',
     fps: null
   },
@@ -64,10 +64,10 @@ const PRESETS = {
     description: 'Hasta 480p · pesa menos',
     maxWidth: 854,
     maxHeight: 480,
-    crf: 37,
-    videoBitrate: '1000k',
+    crf: 33,
+    videoBitrate: '600k',
     audioBitrate: '96k',
-    fps: 30
+    fps: 24
   }
 };
 
@@ -276,30 +276,33 @@ async function convertVideo(videoData) {
   // ============================================================
   // PASO 1: Recrear el worker para cada conversión
   // ============================================================
-  // Esto evita el error "already running" que ocurre cuando un worker
-  // anterior crashó o quedó en un estado inconsistente
-  if (!state.ffmpeg || !state.ffmpegLoaded) {
-    debugLog('[convertVideo] Creando worker y esperando ready...');
-    state.ffmpeg = new Worker(CONFIG.WORKER_PATH);
+  // Este build de ffmpeg.js no soporta reutilización: tras una ejecución
+  // el worker queda en estado inconsistente y las siguientes conversiones se cuelgan.
+  if (state.ffmpeg) {
+    debugLog('[convertVideo] Terminando worker anterior...');
+    try { state.ffmpeg.terminate(); } catch (_) {}
     state.ffmpegLoaded = false;
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timeout esperando worker')), CONFIG.WORKER_READY_TIMEOUT);
-      state.ffmpeg.onmessage = (e) => {
-        if (e.data.type === 'ready') {
-          clearTimeout(timeout);
-          debugLog('[convertVideo] ✓ Worker listo');
-          state.ffmpegLoaded = true;
-          resolve();
-        }
-      };
-      state.ffmpeg.onerror = (err) => {
-        clearTimeout(timeout);
-        reject(err);
-      };
-    });
-  } else {
-    debugLog('[convertVideo] Reutilizando worker ya cargado');
   }
+
+  debugLog('[convertVideo] Creando nuevo worker...');
+  state.ffmpeg = new Worker(CONFIG.WORKER_PATH);
+  state.ffmpegLoaded = false;
+
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('Timeout esperando worker')), CONFIG.WORKER_READY_TIMEOUT);
+    state.ffmpeg.onmessage = (e) => {
+      if (e.data.type === 'ready') {
+        clearTimeout(timeout);
+        debugLog('[convertVideo] ✓ Worker listo');
+        state.ffmpegLoaded = true;
+        resolve();
+      }
+    };
+    state.ffmpeg.onerror = (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    };
+  });
   
   if (!state.ffmpeg || !state.ffmpegLoaded) {
     console.error('[convertVideo] FFmpeg no está cargado');
@@ -383,7 +386,7 @@ async function convertVideo(videoData) {
       '-cpu-used', CONFIG.CPU_USED,  // 2 = mejor calidad
       '-deadline', CONFIG.DEADLINE,  // 'good' = calidad decente
       '-auto-alt-ref', CONFIG.AUTO_ALT_REF,  // 1 = mejor compresión
-      '-lag-in-frames', '25',  // Mejora compresión
+      '-lag-in-frames', '16',  // Máximo efectivo en VP8
       '-threads', '4'  // Número de threads
     ];
     
@@ -563,6 +566,14 @@ async function handleFiles(files) {
     return;
   }
 
+  // Avisar si algún archivo es muy grande (>500MB)
+  const MAX_SAFE_SIZE = 500 * 1024 * 1024;
+  const largeFiles = videoFiles.filter(f => f.size > MAX_SAFE_SIZE);
+  if (largeFiles.length > 0) {
+    const names = largeFiles.map(f => f.name).join(', ');
+    showNotification(`archivos grandes detectados (${names}). puede fallar por memoria del navegador.`, 'warning');
+  }
+
   // Crear objetos VideoData para cada archivo
   for (const file of videoFiles) {
     debugLog('[handleFiles] Procesando archivo:', file.name, 'tipo:', file.type, 'tamaño:', file.size);
@@ -620,7 +631,6 @@ function updateVideoProgress(id, progress) {
   if (video) {
     video.progress = progress;
     updateVideoCard(id);
-    logVideo(id, `Progreso ${progress}%`);
   }
 }
 
@@ -1000,21 +1010,33 @@ function logVideo(id, message) {
 // Mostrar notificación
 function showNotification(message, type = 'info') {
   debugLog('[showNotification]', type, message);
-  // Crear elemento de notificación
   const notification = document.createElement('div');
   notification.className = `notification notification-${type}`;
   notification.textContent = message;
 
-  // Agregar al DOM
   document.body.appendChild(notification);
 
-  // Mostrar con animación
+  // Apilar: desplazar notificaciones existentes hacia arriba
+  const existing = document.querySelectorAll('.notification');
+  const offset = 0;
+  for (let i = existing.length - 1; i >= 0; i--) {
+    const n = existing[i];
+    const idx = existing.length - 1 - i;
+    n.style.bottom = `${2 + idx * 4}rem`;
+  }
+
   setTimeout(() => notification.classList.add('show'), 10);
 
-  // Ocultar y eliminar después de 3 segundos
   setTimeout(() => {
     notification.classList.remove('show');
-    setTimeout(() => notification.remove(), 300);
+    setTimeout(() => {
+      notification.remove();
+      // Recalcular posiciones tras eliminar
+      const remaining = document.querySelectorAll('.notification');
+      remaining.forEach((n, i) => {
+        n.style.bottom = `${2 + (remaining.length - 1 - i) * 4}rem`;
+      });
+    }, 300);
   }, 3000);
 }
 
@@ -1041,7 +1063,8 @@ uploadArea.addEventListener('click', () => {
   fileInput.click();
 });
 
-selectBtn.addEventListener('click', () => {
+selectBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
   debugLog('[Event] Click en selectBtn');
   fileInput.click();
 });
