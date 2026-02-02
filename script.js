@@ -5,7 +5,7 @@
 // coi-serviceworker.js inyecta los headers COOP/COEP necesarios
 
 const CONFIG = {
-  DEBUG_LOGS: true,
+  DEBUG_LOGS: false,
 
   // Codec de video: VP8 para WebM (VP9 causa memory crash en ffmpeg.wasm, issue #679/#786)
   VIDEO_CODEC: 'libvpx',
@@ -27,10 +27,10 @@ const CONFIG = {
 const PRESETS = {
   high: {
     id: 'high',
-    label: 'Alta resolución',
-    description: '720p · máxima calidad',
-    maxWidth: 1280,
-    maxHeight: 720,
+    label: '1080',
+    description: '1080p · máxima calidad',
+    maxWidth: 1920,
+    maxHeight: 1080,
     crf: 10,
     videoBitrate: '1500k',   // Techo 1.5 Mbps (v2 usó 1742 real, baja un poco)
     audioBitrate: '128k',
@@ -39,7 +39,7 @@ const PRESETS = {
   },
   medium: {
     id: 'medium',
-    label: 'Balance',
+    label: '720p',
     description: 'Recomendado · 720p',
     maxWidth: 1280,
     maxHeight: 720,
@@ -51,7 +51,7 @@ const PRESETS = {
   },
   low: {
     id: 'low',
-    label: 'Baja resolución',
+    label: '480p',
     description: '480p · pesa menos',
     maxWidth: 854,
     maxHeight: 480,
@@ -373,7 +373,7 @@ async function convertVideo(videoData) {
 
     // Configurar handler de log para extraer frame/size y capturar errores
     const logHandler = ({ message }) => {
-      console.log('[FFmpeg]', message);
+      debugLog('[FFmpeg]', message);
       const frameMatch = message.match(/frame=\s*(\d+).*size=\s*([\d.]+)kB/);
       if (frameMatch) {
         videoData.currentFrame = parseInt(frameMatch[1]);
@@ -768,9 +768,9 @@ function updateVideosContainer() {
 
 // Sufijo de nombre según preset
 const PRESET_SUFFIX = {
-  high: '_alta',
-  medium: '_defecto',
-  low: '_baja'
+  high: '_1080',
+  medium: '_720p',
+  low: '_480p'
 };
 
 // Generar nombre base del archivo de salida
@@ -816,7 +816,7 @@ function buildLogText(video) {
   return lines.filter(l => l !== null).join('\n');
 }
 
-// Descargar video individual + log
+// Descargar video individual
 function downloadVideo(id) {
   debugLog('[downloadVideo]', id);
   const video = state.videos.find(v => v.id === id);
@@ -833,19 +833,22 @@ function downloadVideo(id) {
   videoLink.download = `${baseName}.webm`;
   videoLink.click();
 
-  // Descargar log
-  const logText = buildLogText(video);
-  const logBlob = new Blob([logText], { type: 'text/plain' });
-  const logUrl = URL.createObjectURL(logBlob);
-  const logLink = document.createElement('a');
-  logLink.href = logUrl;
-  logLink.download = `${baseName}_log.txt`;
-  setTimeout(() => {
-    logLink.click();
-    URL.revokeObjectURL(logUrl);
-  }, 100);
-
-  debugLog('[downloadVideo] Descarga iniciada:', `${baseName}.webm + log`);
+  if (CONFIG.DEBUG_LOGS) {
+    // Descargar log (solo en modo debug)
+    const logText = buildLogText(video);
+    const logBlob = new Blob([logText], { type: 'text/plain' });
+    const logUrl = URL.createObjectURL(logBlob);
+    const logLink = document.createElement('a');
+    logLink.href = logUrl;
+    logLink.download = `${baseName}_log.txt`;
+    setTimeout(() => {
+      logLink.click();
+      URL.revokeObjectURL(logUrl);
+    }, 100);
+    debugLog('[downloadVideo] Descarga iniciada:', `${baseName}.webm + log`);
+  } else {
+    debugLog('[downloadVideo] Descarga iniciada:', `${baseName}.webm`);
+  }
 }
 
 // Eliminar video
@@ -918,7 +921,9 @@ async function downloadAll() {
       const baseName = getOutputBaseName(video);
       debugLog(`[downloadAll] Añadiendo al ZIP: ${baseName}.webm`);
       zip.file(`${baseName}.webm`, video.webmBlob);
-      zip.file(`${baseName}_log.txt`, buildLogText(video));
+      if (CONFIG.DEBUG_LOGS) {
+        zip.file(`${baseName}_log.txt`, buildLogText(video));
+      }
     }
 
     debugLog('[downloadAll] Generando archivo ZIP...');
