@@ -1,65 +1,64 @@
 // ============================================================
 // CONFIGURACIÓN GLOBAL DE LA APLICACIÓN
 // ============================================================
-// Usa ffmpeg.wasm v0.12.x con multi-threading (VP9 + SharedArrayBuffer)
+// Usa ffmpeg.wasm v0.12.x con multi-threading (VP8 + SharedArrayBuffer)
 // coi-serviceworker.js inyecta los headers COOP/COEP necesarios
 
 const CONFIG = {
   DEBUG_LOGS: true,
 
-  // Codec de video: VP9 para WebM (mejor compresión que VP8)
-  VIDEO_CODEC: 'libvpx-vp9',
+  // Codec de video: VP8 para WebM (VP9 causa memory crash en ffmpeg.wasm, issue #679/#786)
+  VIDEO_CODEC: 'libvpx',
 
-  // Codec de audio
-  AUDIO_CODEC: 'libopus',
+  // Codec de audio: Vorbis en contenedor WebM (libopus causa stack overflow en WASM, issue #591)
+  AUDIO_CODEC: 'libvorbis',
 
   // CDN base para @ffmpeg/core-mt
   CORE_MT_BASE: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.9/dist/umd',
-
-  // Timeout para carga de FFmpeg (en milisegundos)
-  FFMPEG_LOAD_TIMEOUT: 120000  // 2 minutos (el WASM es ~31MB)
 };
 
 // ============================================================
-// PRESETS VP9: cada modo define resolución, CRF, bitrates, etc.
+// PRESETS VP8: cada modo define resolución, CRF, bitrates, etc.
 // ============================================================
-// VP9 CRF: 0 (mejor) a 63 (peor). Con -b:v 0 es calidad constante pura.
-// Con -b:v > 0 es VBR limitado (CRF como piso de calidad, bitrate como techo).
+// VP8 CRF: 4 (mejor) a 63 (peor).
+// Con -b:v > 0: modo VBR limitado (CRF como piso de calidad, bitrate como techo).
+// Esto permite que cada preset produzca archivos de tamaño realmente distinto.
+// cpu-used: 0-16 (más alto = más rápido, menos calidad). Para WASM usar >= 4.
 const PRESETS = {
   high: {
     id: 'high',
     label: 'Alta resolución',
-    description: 'Hasta 720p · más calidad',
+    description: '720p · máxima calidad',
     maxWidth: 1280,
     maxHeight: 720,
-    crf: 25,
-    videoBitrate: '0',    // Calidad constante pura
+    crf: 10,
+    videoBitrate: '1500k',   // Techo 1.5 Mbps (v2 usó 1742 real, baja un poco)
     audioBitrate: '128k',
-    speed: 2,
+    cpuUsed: 4,
     fps: null
   },
   medium: {
     id: 'medium',
     label: 'Balance',
-    description: 'Recomendado · hasta 720p',
+    description: 'Recomendado · 720p',
     maxWidth: 1280,
     maxHeight: 720,
-    crf: 35,
-    videoBitrate: '0',
-    audioBitrate: '128k',
-    speed: 3,
+    crf: 20,
+    videoBitrate: '1200k',   // Techo 1.2 Mbps → escalón claro entre alta y baja
+    audioBitrate: '96k',
+    cpuUsed: 5,
     fps: null
   },
   low: {
     id: 'low',
     label: 'Baja resolución',
-    description: 'Hasta 480p · pesa menos',
+    description: '480p · pesa menos',
     maxWidth: 854,
     maxHeight: 480,
-    crf: 42,
-    videoBitrate: '800k',  // Techo de bitrate para contener tamaño
+    crf: 33,
+    videoBitrate: '800k',    // Mismo techo que v1 (te gustaba más)
     audioBitrate: '96k',
-    speed: 4,
+    cpuUsed: 8,
     fps: 24
   }
 };
@@ -247,7 +246,7 @@ async function extractMetadata(file) {
 }
 
 /**
- * Convierte un video a formato WebM usando ffmpeg.wasm (VP9 multi-thread)
+ * Convierte un video a formato WebM usando ffmpeg.wasm (VP8 multi-thread)
  */
 async function convertVideo(videoData) {
   debugLog('[convertVideo] Iniciando conversión de:', videoData.originalFile.name);
@@ -264,19 +263,48 @@ async function convertVideo(videoData) {
   }
 
   const ffmpeg = state.ffmpeg;
-  const inputName = `input.${videoData.originalFile.name.split('.').pop()}`;
+  let inputName = `input.${videoData.originalFile.name.split('.').pop()}`;
   const outputName = 'output.webm';
   const crfValue = videoData.crf ?? state.crf;
+
+  // Umbral para usar WORKERFS en lugar de writeFile (evita copiar archivos grandes a WASM memory)
+  const WORKERFS_THRESHOLD = 200 * 1024 * 1024; // 200MB
+  let usedWorkerFS = false;
+  const mountPoint = '/mounted';
 
   try {
     // Actualizar estado a "convirtiendo"
     updateVideoStatus(videoData.id, 'converting', 0);
 
     // Escribir archivo de entrada en el FS virtual de ffmpeg.wasm
-    debugLog('[convertVideo] Escribiendo archivo de entrada...');
-    const fileBuffer = await videoData.originalFile.arrayBuffer();
-    await ffmpeg.writeFile(inputName, new Uint8Array(fileBuffer));
-    debugLog('[convertVideo] Archivo escrito, tamaño:', fileBuffer.byteLength, 'bytes');
+    debugLog('[convertVideo] Tamaño del archivo:', videoData.originalFile.size, 'bytes');
+
+    if (videoData.originalFile.size >= WORKERFS_THRESHOLD) {
+      // Archivos grandes: montar con WORKERFS (no copia a memoria WASM)
+      debugLog('[convertVideo] Archivo grande detectado, usando WORKERFS mount...');
+      // Desmontar primero por si quedó montado de una conversión anterior
+      try { await ffmpeg.unmount(mountPoint); } catch (_) {}
+      try {
+        await ffmpeg.createDir(mountPoint);
+      } catch (_) {
+        // El directorio puede ya existir
+      }
+      await ffmpeg.mount('WORKERFS', { files: [videoData.originalFile] }, mountPoint);
+      usedWorkerFS = true;
+      // WORKERFS monta el archivo con su nombre original
+      inputName = `${mountPoint}/${videoData.originalFile.name}`;
+      debugLog('[convertVideo] Archivo montado en:', inputName);
+      logVideo(videoData.id, 'Usando lectura directa (WORKERFS) para archivo grande');
+    } else {
+      // Archivos pequeños: writeFile normal
+      debugLog('[convertVideo] Escribiendo archivo con writeFile...');
+      const fileBuffer = await videoData.originalFile.arrayBuffer();
+      if (!fileBuffer || fileBuffer.byteLength === 0) {
+        throw new Error(`No se pudo leer el archivo. arrayBuffer devolvió ${fileBuffer ? fileBuffer.byteLength : 'null'} bytes.`);
+      }
+      await ffmpeg.writeFile(inputName, new Uint8Array(fileBuffer));
+      debugLog('[convertVideo] Archivo escrito, tamaño:', fileBuffer.byteLength, 'bytes');
+    }
 
     // Detectar si necesitamos reducir la resolución
     const maxWidth = preset.maxWidth ?? PRESETS.medium.maxWidth;
@@ -303,18 +331,18 @@ async function convertVideo(videoData) {
       logVideo(videoData.id, `Escalando a ${newWidth}x${newHeight}`);
     }
 
-    // Construir comando FFmpeg para VP9
+    // Construir comando FFmpeg para VP8
     const ffmpegArgs = [
       '-i', inputName,
-      '-c:v', CONFIG.VIDEO_CODEC,        // libvpx-vp9
+      '-c:v', CONFIG.VIDEO_CODEC,        // libvpx (VP8)
       '-crf', crfValue.toString(),
-      '-b:v', preset.videoBitrate,        // '0' para CQ puro, o bitrate para VBR
-      '-row-mt', '1',                     // Multi-thread por filas (VP9)
-      '-speed', String(preset.speed),     // 0-8 (2=bueno, 4=rápido)
-      '-tile-columns', '2',              // Paralelismo de decodificación
-      '-c:a', CONFIG.AUDIO_CODEC,        // libopus
+      '-b:v', preset.videoBitrate,        // '0' para CQ puro, o bitrate techo
+      '-cpu-used', String(preset.cpuUsed), // 0-16 (más alto = más rápido)
+      '-lag-in-frames', '16',             // Lookahead frames (max efectivo 16)
+      '-auto-alt-ref', '1',              // Mejora calidad con frames alternativos
+      '-c:a', CONFIG.AUDIO_CODEC,        // libvorbis
       '-b:a', preset.audioBitrate,
-      '-threads', '4'
+      '-threads', '2'
     ];
 
     // Añadir filtro de escala si es necesario
@@ -329,7 +357,7 @@ async function convertVideo(videoData) {
 
     ffmpegArgs.push(outputName);
     debugLog('[convertVideo] Argumentos FFmpeg:', ffmpegArgs.join(' '));
-    logVideo(videoData.id, `VP9 · CRF ${crfValue} · speed ${preset.speed}`);
+    logVideo(videoData.id, `VP8 · CRF ${crfValue} · cpu-used ${preset.cpuUsed}`);
 
     // Configurar handler de progreso
     let lastLoggedProgress = 0;
@@ -364,11 +392,16 @@ async function convertVideo(videoData) {
     videoData.ffmpegArgsUsed = [...ffmpegArgs];
 
     // Ejecutar conversión
-    await ffmpeg.exec(ffmpegArgs);
+    const exitCode = await ffmpeg.exec(ffmpegArgs);
+    debugLog('[convertVideo] FFmpeg exit code:', exitCode);
 
     // Limpiar handlers
     ffmpeg.off('progress', progressHandler);
     ffmpeg.off('log', logHandler);
+
+    if (exitCode !== 0) {
+      throw new Error(`FFmpeg terminó con código ${exitCode}. Revisa los logs para más detalles.`);
+    }
 
     // Leer archivo de salida
     debugLog('[convertVideo] Leyendo archivo de salida...');
@@ -378,9 +411,16 @@ async function convertVideo(videoData) {
 
     // Limpiar archivos temporales del FS virtual
     try {
-      await ffmpeg.deleteFile(inputName);
+      if (usedWorkerFS) {
+        await ffmpeg.unmount(mountPoint);
+        debugLog('[convertVideo] WORKERFS desmontado');
+      } else {
+        await ffmpeg.deleteFile(inputName);
+      }
       await ffmpeg.deleteFile(outputName);
-    } catch (_) {}
+    } catch (cleanupErr) {
+      debugLog('[convertVideo] Error limpiando archivos temporales:', cleanupErr);
+    }
 
     // Estadísticas
     const webmSizeMB = (blob.size / (1024 * 1024)).toFixed(2);
@@ -401,14 +441,28 @@ async function convertVideo(videoData) {
     console.error('[convertVideo] Error type:', typeof error, 'keys:', error ? Object.keys(error) : 'null');
     console.error('[convertVideo] Error message:', error?.message);
     console.error('[convertVideo] Error stack:', error?.stack);
+
+    // Limpiar WORKERFS si estaba montado
+    if (usedWorkerFS) {
+      try {
+        await ffmpeg.unmount(mountPoint);
+        debugLog('[convertVideo] WORKERFS desmontado (en error handler)');
+      } catch (_) {}
+    }
+
     if (error?.message === 'cancelled') {
       updateVideoStatus(videoData.id, 'cancelled', 0);
       logVideo(videoData.id, 'Conversión cancelada');
       showNotification(`conversión cancelada: ${videoData.originalFile.name}`, 'info');
     } else {
-      const errorMsg = error?.message || String(error) || 'desconocido';
+      const errorStr = error?.message || String(error) || 'desconocido';
+      // Detectar errores de memoria para dar un mensaje más claro
+      const isMemoryError = errorStr.includes('memory') || errorStr.includes('out of bounds') || errorStr.includes('OOM');
+      const errorMsg = isMemoryError
+        ? `Sin memoria suficiente para este archivo (${(videoData.originalSize / (1024 * 1024)).toFixed(0)} MB). Prueba un archivo más pequeño.`
+        : errorStr;
       logVideo(videoData.id, `Error: ${errorMsg}`);
-      updateVideoError(videoData.id, 'error al convertir el video');
+      updateVideoError(videoData.id, isMemoryError ? 'archivo demasiado grande para la memoria del navegador' : 'error al convertir el video');
       showNotification(`error al convertir: ${videoData.originalFile.name}`, 'error');
     }
   }
@@ -712,7 +766,57 @@ function updateVideosContainer() {
   downloadAllBtn.disabled = completedVideos === 0;
 }
 
-// Descargar video individual
+// Sufijo de nombre según preset
+const PRESET_SUFFIX = {
+  high: '_alta',
+  medium: '_defecto',
+  low: '_baja'
+};
+
+// Generar nombre base del archivo de salida
+function getOutputBaseName(video) {
+  const baseName = video.originalFile.name.replace(/\.[^/.]+$/, '');
+  const suffix = PRESET_SUFFIX[video.presetId] || '';
+  return `${baseName}${suffix}`;
+}
+
+// Generar contenido del log como texto
+function buildLogText(video) {
+  const originalSizeMB = (video.originalSize / (1024 * 1024)).toFixed(2);
+  const webmSizeMB = (video.webmSize / (1024 * 1024)).toFixed(2);
+  const reduction = ((1 - video.webmSize / video.originalSize) * 100).toFixed(1);
+  const duration = video.metadata?.duration > 0 ? formatDuration(video.metadata.duration) : 'desconocida';
+  const preset = PRESETS[video.presetId] || {};
+
+  const lines = [
+    `=== Log de conversión ===`,
+    `Archivo original: ${video.originalFile.name}`,
+    `Tamaño original: ${originalSizeMB} MB`,
+    `Resolución original: ${video.metadata?.width || '?'}x${video.metadata?.height || '?'}`,
+    `Duración: ${duration}`,
+    ``,
+    `--- Configuración ---`,
+    `Preset: ${preset.label || video.presetId}`,
+    `Codec video: ${CONFIG.VIDEO_CODEC}`,
+    `Codec audio: ${CONFIG.AUDIO_CODEC}`,
+    `CRF: ${video.crf}`,
+    `Bitrate techo: ${preset.videoBitrate || '?'}`,
+    `Audio bitrate: ${preset.audioBitrate || '?'}`,
+    `cpu-used: ${preset.cpuUsed || '?'}`,
+    video.scaledResolution ? `Resolución de salida: ${video.scaledResolution}` : null,
+    ``,
+    `--- Resultado ---`,
+    `Tamaño WebM: ${webmSizeMB} MB`,
+    `Reducción: -${reduction}%`,
+    ``,
+    `--- Logs de FFmpeg ---`,
+    ...(video.logs || [])
+  ];
+
+  return lines.filter(l => l !== null).join('\n');
+}
+
+// Descargar video individual + log
 function downloadVideo(id) {
   debugLog('[downloadVideo]', id);
   const video = state.videos.find(v => v.id === id);
@@ -721,11 +825,27 @@ function downloadVideo(id) {
     return;
   }
 
-  const link = document.createElement('a');
-  link.href = video.webmUrl;
-  link.download = video.originalFile.name.replace(/\.[^/.]+$/, '') + '.webm';
-  link.click();
-  debugLog('[downloadVideo] Descarga iniciada:', link.download);
+  const baseName = getOutputBaseName(video);
+
+  // Descargar video
+  const videoLink = document.createElement('a');
+  videoLink.href = video.webmUrl;
+  videoLink.download = `${baseName}.webm`;
+  videoLink.click();
+
+  // Descargar log
+  const logText = buildLogText(video);
+  const logBlob = new Blob([logText], { type: 'text/plain' });
+  const logUrl = URL.createObjectURL(logBlob);
+  const logLink = document.createElement('a');
+  logLink.href = logUrl;
+  logLink.download = `${baseName}_log.txt`;
+  setTimeout(() => {
+    logLink.click();
+    URL.revokeObjectURL(logUrl);
+  }, 100);
+
+  debugLog('[downloadVideo] Descarga iniciada:', `${baseName}.webm + log`);
 }
 
 // Eliminar video
@@ -795,9 +915,10 @@ async function downloadAll() {
     const zip = new JSZip();
 
     for (const video of completedVideos) {
-      const filename = video.originalFile.name.replace(/\.[^/.]+$/, '') + '.webm';
-      debugLog(`[downloadAll] Añadiendo al ZIP: ${filename}`);
-      zip.file(filename, video.webmBlob);
+      const baseName = getOutputBaseName(video);
+      debugLog(`[downloadAll] Añadiendo al ZIP: ${baseName}.webm`);
+      zip.file(`${baseName}.webm`, video.webmBlob);
+      zip.file(`${baseName}_log.txt`, buildLogText(video));
     }
 
     debugLog('[downloadAll] Generando archivo ZIP...');
@@ -961,6 +1082,72 @@ qualityButtons.forEach(button => {
   button.addEventListener('click', () => updateCRFFromButton(button));
 });
 
+// ============================================================
+// DEBUG: Convertir un video en las 3 calidades a la vez
+// TODO: Quitar este bloque cuando no se necesite
+// ============================================================
+async function handleTripleConvert(file) {
+  if (!file || !file.type.startsWith('video/')) {
+    showNotification('selecciona un archivo de video válido', 'error');
+    return;
+  }
+  if (!state.ffmpegLoaded) {
+    showNotification('ffmpeg aún se está cargando', 'error');
+    return;
+  }
+
+  debugLog('[debugTriple] Iniciando conversión triple de:', file.name);
+  const metadata = await extractMetadata(file);
+  const presetOrder = ['high', 'medium', 'low'];
+
+  // Crear las 3 tarjetas primero
+  const videoDataList = presetOrder.map(presetId => {
+    const preset = PRESETS[presetId];
+    const videoData = {
+      id: `${file.name}_mode${presetId}_crf${preset.crf}_${Date.now()}`,
+      presetId,
+      originalFile: file,
+      originalSize: file.size,
+      webmBlob: null,
+      webmSize: 0,
+      webmUrl: null,
+      crf: preset.crf,
+      logs: [],
+      currentFrame: null,
+      currentSizeKB: null,
+      status: 'pending',
+      progress: 0,
+      metadata
+    };
+    state.videos.push(videoData);
+    renderVideoCard(videoData);
+    return videoData;
+  });
+
+  updateVideosContainer();
+
+  // Convertir secuencialmente
+  for (const videoData of videoDataList) {
+    debugLog('[debugTriple] Convirtiendo:', videoData.presetId);
+    await convertVideo(videoData);
+  }
+  debugLog('[debugTriple] ✓ Las 3 conversiones completadas');
+  showNotification('las 3 conversiones han terminado', 'success');
+}
+
+const debugTripleBtn = document.getElementById('debugTripleBtn');
+const debugTripleInput = document.getElementById('debugTripleInput');
+
+if (debugTripleBtn && debugTripleInput) {
+  debugTripleBtn.addEventListener('click', () => debugTripleInput.click());
+  debugTripleInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+      handleTripleConvert(e.target.files[0]);
+      e.target.value = '';
+    }
+  });
+}
+
 // Inicializar
 document.addEventListener('DOMContentLoaded', () => {
   debugLog('='.repeat(60));
@@ -980,5 +1167,12 @@ document.addEventListener('DOMContentLoaded', () => {
   state.mode = preset.id;
   state.crf = preset.crf;
   debugLog('[INIT] Modo inicial:', state.mode, '| CRF:', state.crf);
+
+  // Mostrar botón debug si DEBUG_LOGS está activado
+  if (CONFIG.DEBUG_LOGS) {
+    const debugDiv = document.getElementById('debugTriple');
+    if (debugDiv) debugDiv.style.display = 'block';
+  }
+
   loadFFmpeg();
 });
