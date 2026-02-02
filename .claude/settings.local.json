@@ -3,7 +3,13 @@
     "allow": [
       "Bash(tree:*)",
       "Bash(ls:*)",
-      "Bash(node:*)"
+      "Bash(node:*)",
+      "WebFetch(domain:ffmpegwasm.netlify.app)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:cdn.jsdelivr.net)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl:*)"
     ]
   }
 }

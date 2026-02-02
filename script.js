@@ -1,40 +1,30 @@
 // ============================================================
 // CONFIGURACIÓN GLOBAL DE LA APLICACIÓN
 // ============================================================
-// Puedes modificar estos valores para ajustar el comportamiento del conversor.
-// Los valores específicos por modo (resolución, CRF, bitrates) viven en PRESETS.
+// Usa ffmpeg.wasm v0.12.x con multi-threading (VP9 + SharedArrayBuffer)
+// coi-serviceworker.js inyecta los headers COOP/COEP necesarios
 
 const CONFIG = {
-  // Mostrar logs en consola (si es false, solo errores críticos van a consola)
-  DEBUG_LOGS: false,
-  
-  // Codec de video: VP8 optimizado para compresión
-  VIDEO_CODEC: 'libvpx',  // VP8 codec para WebM (optimizado)
-  
-  // Codec de audio (no cambiar a menos que sepas lo que haces)
-  AUDIO_CODEC: 'libopus',  // Opus codec para WebM
-  
-  // Parámetros de optimización de FFmpeg para VP8
-  // cpu-used: 0-16 para VP8 (valores más altos = más rápido pero menor calidad)
-  // speed: 2 es mejor calidad, 4 es más rápido
-  CPU_USED: '4',
-  DEADLINE: 'good',
-  AUTO_ALT_REF: '1',
-  
-  // Ruta al worker de FFmpeg
-  WORKER_PATH: 'ffmpeg-lib/ffmpeg-worker-webm.js',
-  
-  // Timeout para operaciones (en milisegundos)
-  WORKER_READY_TIMEOUT: 10000,  // 10 segundos
-  FFMPEG_LOAD_TIMEOUT: 30000     // 30 segundos
+  DEBUG_LOGS: true,
+
+  // Codec de video: VP9 para WebM (mejor compresión que VP8)
+  VIDEO_CODEC: 'libvpx-vp9',
+
+  // Codec de audio
+  AUDIO_CODEC: 'libopus',
+
+  // CDN base para @ffmpeg/core-mt
+  CORE_MT_BASE: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.9/dist/umd',
+
+  // Timeout para carga de FFmpeg (en milisegundos)
+  FFMPEG_LOAD_TIMEOUT: 120000  // 2 minutos (el WASM es ~31MB)
 };
 
 // ============================================================
-// PRESETS (LOS 3 MODOS): cada modo define resolución, CRF, bitrates, etc.
+// PRESETS VP9: cada modo define resolución, CRF, bitrates, etc.
 // ============================================================
-// Nota: mantenemos 720p como techo "seguro" en ffmpeg.wasm para evitar OOM.
-// Si quieres permitir 1080p, tendrás que asumir más riesgo de memoria.
-// maxWidth/maxHeight se usan para el escalado automático.
+// VP9 CRF: 0 (mejor) a 63 (peor). Con -b:v 0 es calidad constante pura.
+// Con -b:v > 0 es VBR limitado (CRF como piso de calidad, bitrate como techo).
 const PRESETS = {
   high: {
     id: 'high',
@@ -42,9 +32,10 @@ const PRESETS = {
     description: 'Hasta 720p · más calidad',
     maxWidth: 1280,
     maxHeight: 720,
-    crf: 10,
-    videoBitrate: '2500k',
+    crf: 25,
+    videoBitrate: '0',    // Calidad constante pura
     audioBitrate: '128k',
+    speed: 2,
     fps: null
   },
   medium: {
@@ -53,9 +44,10 @@ const PRESETS = {
     description: 'Recomendado · hasta 720p',
     maxWidth: 1280,
     maxHeight: 720,
-    crf: 20,
-    videoBitrate: '1200k',
+    crf: 35,
+    videoBitrate: '0',
     audioBitrate: '128k',
+    speed: 3,
     fps: null
   },
   low: {
@@ -64,9 +56,10 @@ const PRESETS = {
     description: 'Hasta 480p · pesa menos',
     maxWidth: 854,
     maxHeight: 480,
-    crf: 33,
-    videoBitrate: '600k',
+    crf: 42,
+    videoBitrate: '800k',  // Techo de bitrate para contener tamaño
     audioBitrate: '96k',
+    speed: 4,
     fps: 24
   }
 };
@@ -74,8 +67,6 @@ const PRESETS = {
 function getActivePreset() {
   return PRESETS[state.mode] || PRESETS.medium;
 }
-
-
 
 // Utilidad para log condicionado
 function debugLog(...args) {
@@ -142,7 +133,20 @@ const qualityButtons = document.querySelectorAll('.quality-btn');
 const uploadTitle = document.getElementById('uploadTitle');
 const uploadSubtitle = document.getElementById('uploadSubtitle');
 
-// Inicializar FFmpeg.js (versión compatible sin SharedArrayBuffer)
+// ============================================================
+// toBlobURL: descarga un archivo remoto y lo convierte a Blob URL
+// ============================================================
+async function toBlobURL(url, mimeType) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.status}`);
+  const buffer = await response.arrayBuffer();
+  const blob = new Blob([buffer], { type: mimeType });
+  return URL.createObjectURL(blob);
+}
+
+// ============================================================
+// CARGAR FFMPEG.WASM (multi-thread con SharedArrayBuffer)
+// ============================================================
 async function loadFFmpeg() {
   if (state.ffmpegLoaded || state.isLoadingFFmpeg) {
     debugLog('[loadFFmpeg] FFmpeg ya está cargado o cargándose, saltando...');
@@ -153,42 +157,34 @@ async function loadFFmpeg() {
   updateUploadAreaLoading(true);
 
   try {
-    debugLog('[loadFFmpeg] Iniciando carga de FFmpeg.js (compatible con GitHub Pages)...');
-    
-    // Crear worker de FFmpeg
-    debugLog(`[loadFFmpeg] Creando Worker desde: ${CONFIG.WORKER_PATH}`);
-    state.ffmpeg = new Worker(CONFIG.WORKER_PATH);
-    
-    // Configurar manejadores de mensajes
-    await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        console.error('[loadFFmpeg] Timeout esperando mensaje "ready"');
-        reject(new Error('Timeout cargando FFmpeg'));
-      }, CONFIG.FFMPEG_LOAD_TIMEOUT);
+    // Verificar que SharedArrayBuffer está disponible (coi-serviceworker debe estar activo)
+    if (typeof SharedArrayBuffer === 'undefined') {
+      throw new Error('SharedArrayBuffer no disponible. Recarga la página (coi-serviceworker necesita un reload inicial).');
+    }
 
-      state.ffmpeg.onmessage = (e) => {
-        const msg = e.data;
-        debugLog('[loadFFmpeg] Mensaje recibido del worker:', msg.type, msg);
-        
-        if (msg.type === 'ready') {
-          clearTimeout(timeout);
-          debugLog('[loadFFmpeg] ✓ FFmpeg.js cargado y listo');
-          state.ffmpegLoaded = true;
-          resolve();
-        } else if (msg.type === 'stdout') {
-          debugLog('[FFmpeg stdout]', msg.data);
-        } else if (msg.type === 'stderr') {
-          debugLog('[FFmpeg stderr]', msg.data);
-        }
-      };
+    debugLog('[loadFFmpeg] Iniciando carga de ffmpeg.wasm multi-thread...');
 
-      state.ffmpeg.onerror = (error) => {
-        clearTimeout(timeout);
-        console.error('[loadFFmpeg] Error en el worker:', error);
-        reject(error);
-      };
+    const { FFmpeg } = FFmpegWASM;
+    const ffmpeg = new FFmpeg();
+
+    // Log handler
+    ffmpeg.on('log', ({ message }) => {
+      debugLog('[FFmpeg log]', message);
     });
 
+    // Cargar core multi-thread desde CDN como blob URLs
+    const baseURL = CONFIG.CORE_MT_BASE;
+    debugLog('[loadFFmpeg] Descargando core desde:', baseURL);
+
+    await ffmpeg.load({
+      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+      workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
+    });
+
+    state.ffmpeg = ffmpeg;
+    state.ffmpegLoaded = true;
+    debugLog('[loadFFmpeg] ✓ ffmpeg.wasm cargado y listo');
     showNotification('ffmpeg cargado correctamente', 'success');
   } catch (error) {
     console.error('[loadFFmpeg] ✗ Error cargando FFmpeg:', error);
@@ -206,7 +202,7 @@ function updateUploadAreaLoading(isLoading) {
   if (isLoading) {
     uploadArea.classList.add('loading');
     uploadTitle.textContent = 'cargando ffmpeg...';
-    uploadSubtitle.textContent = 'esto puede tardar unos segundos';
+    uploadSubtitle.textContent = 'descargando (~31MB), puede tardar unos segundos';
     selectBtn.disabled = true;
   } else {
     uploadArea.classList.remove('loading');
@@ -251,19 +247,7 @@ async function extractMetadata(file) {
 }
 
 /**
- * Convierte un video a formato WebM usando FFmpeg.js
- * 
- * Esta función:
- * 1. Recrea el worker de FFmpeg para cada conversión (evita errores de estado)
- * 2. Detecta videos de alta resolución y los reduce automáticamente
- * 3. Mantiene el aspect ratio al escalar
- * 4. Actualiza el progreso en tiempo real
- * 5. Maneja errores y limpia recursos
- * 
- * @param {Object} videoData - Objeto con información del video a convertir
- * @param {File} videoData.originalFile - Archivo de video original
- * @param {Object} videoData.metadata - Metadata del video (width, height, duration)
- * @param {string} videoData.id - ID único del video
+ * Convierte un video a formato WebM usando ffmpeg.wasm (VP9 multi-thread)
  */
 async function convertVideo(videoData) {
   debugLog('[convertVideo] Iniciando conversión de:', videoData.originalFile.name);
@@ -272,45 +256,14 @@ async function convertVideo(videoData) {
   logVideo(videoData.id, `Iniciando conversión · ${presetAtStart.label} (CRF ${videoData.crf})`);
   state.currentVideoId = videoData.id;
   const durationSec = Number(videoData.metadata?.duration || 0);
-  
-  // ============================================================
-  // PASO 1: Recrear el worker para cada conversión
-  // ============================================================
-  // Este build de ffmpeg.js no soporta reutilización: tras una ejecución
-  // el worker queda en estado inconsistente y las siguientes conversiones se cuelgan.
-  if (state.ffmpeg) {
-    debugLog('[convertVideo] Terminando worker anterior...');
-    try { state.ffmpeg.terminate(); } catch (_) {}
-    state.ffmpegLoaded = false;
-  }
 
-  debugLog('[convertVideo] Creando nuevo worker...');
-  state.ffmpeg = new Worker(CONFIG.WORKER_PATH);
-  state.ffmpegLoaded = false;
-
-  await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Timeout esperando worker')), CONFIG.WORKER_READY_TIMEOUT);
-    state.ffmpeg.onmessage = (e) => {
-      if (e.data.type === 'ready') {
-        clearTimeout(timeout);
-        debugLog('[convertVideo] ✓ Worker listo');
-        state.ffmpegLoaded = true;
-        resolve();
-      }
-    };
-    state.ffmpeg.onerror = (err) => {
-      clearTimeout(timeout);
-      reject(err);
-    };
-  });
-  
   if (!state.ffmpeg || !state.ffmpegLoaded) {
     console.error('[convertVideo] FFmpeg no está cargado');
     showNotification('ffmpeg no está cargado', 'error');
     return;
   }
 
-  const worker = state.ffmpeg;
+  const ffmpeg = state.ffmpeg;
   const inputName = `input.${videoData.originalFile.name.split('.').pop()}`;
   const outputName = 'output.webm';
   const crfValue = videoData.crf ?? state.crf;
@@ -319,82 +272,56 @@ async function convertVideo(videoData) {
     // Actualizar estado a "convirtiendo"
     updateVideoStatus(videoData.id, 'converting', 0);
 
-    debugLog('[convertVideo] Leyendo archivo de entrada...');
-    // Leer archivo como ArrayBuffer
-    const fileData = await videoData.originalFile.arrayBuffer();
-    debugLog('[convertVideo] Archivo leído, tamaño:', fileData.byteLength, 'bytes');
+    // Escribir archivo de entrada en el FS virtual de ffmpeg.wasm
+    debugLog('[convertVideo] Escribiendo archivo de entrada...');
+    const fileBuffer = await videoData.originalFile.arrayBuffer();
+    await ffmpeg.writeFile(inputName, new Uint8Array(fileBuffer));
+    debugLog('[convertVideo] Archivo escrito, tamaño:', fileBuffer.byteLength, 'bytes');
 
-    debugLog('[convertVideo] Preparando comando FFmpeg...');
-    
-    // Detectar si necesitamos reducir la resolución para evitar OOM
-    // Usando los límites definidos por el preset seleccionado
+    // Detectar si necesitamos reducir la resolución
     const maxWidth = preset.maxWidth ?? PRESETS.medium.maxWidth;
     const maxHeight = preset.maxHeight ?? PRESETS.medium.maxHeight;
     let scaleFilter = null;
-    
+
     if (videoData.metadata.width > maxWidth || videoData.metadata.height > maxHeight) {
-      // ============================================================
-      // REDUCCIÓN AUTOMÁTICA DE RESOLUCIÓN
-      // ============================================================
-      // Calcular nueva resolución manteniendo aspect ratio para evitar distorsión
       const aspectRatio = videoData.metadata.width / videoData.metadata.height;
       let newWidth, newHeight;
-      
+
       if (aspectRatio > (maxWidth / maxHeight)) {
-        // Video más ancho, limitar por ancho
         newWidth = maxWidth;
         newHeight = Math.round(maxWidth / aspectRatio);
-        // Asegurar que sea par (requerido por VP8)
         newHeight = newHeight % 2 === 0 ? newHeight : newHeight - 1;
       } else {
-        // Video más alto, limitar por alto
         newHeight = maxHeight;
         newWidth = Math.round(maxHeight * aspectRatio);
-        // Asegurar que sea par (requerido por VP8)
         newWidth = newWidth % 2 === 0 ? newWidth : newWidth - 1;
       }
-      
+
       scaleFilter = `scale=${newWidth}:${newHeight}`;
       videoData.scaledResolution = `${newWidth}x${newHeight}`;
-      debugLog(`[convertVideo] ⚠️  Video de alta resolución detectado (${videoData.metadata.width}x${videoData.metadata.height})`);
-      debugLog(`[convertVideo] 📐 Reduciendo a ${newWidth}x${newHeight} para evitar problemas de memoria`);
-      showNotification(`video de alta resolución detectado. reduciendo a ${newWidth}x${newHeight} para optimizar`, 'info');
-      logVideo(videoData.id, `Escalando a ${newWidth}x${newHeight} para evitar OOM`);
+      showNotification(`reduciendo a ${newWidth}x${newHeight} para optimizar`, 'info');
+      logVideo(videoData.id, `Escalando a ${newWidth}x${newHeight}`);
     }
-    
-    // ============================================================
-    // PASO 2: Determinar bitrate máximo según preset
-    // ============================================================
-    // VP8 necesita un bitrate máximo específico para que CRF funcione correctamente
-    const targetBitrate = preset.videoBitrate ?? PRESETS.medium.videoBitrate;
-    
-    logVideo(videoData.id, `⚡ USANDO CRF ${crfValue} con bitrate ${targetBitrate}`);
-    logVideo(videoData.id, `🎯 CRF configurado: ${crfValue} (menor = mejor calidad)`);
-    
-    // ============================================================
-    // PASO 3: Construir comando FFmpeg
-    // ============================================================
-    // Parámetros optimizados para VP8 con mejor compresión
+
+    // Construir comando FFmpeg para VP9
     const ffmpegArgs = [
       '-i', inputName,
-      '-c:v', CONFIG.VIDEO_CODEC,  // libvpx (VP8)
+      '-c:v', CONFIG.VIDEO_CODEC,        // libvpx-vp9
       '-crf', crfValue.toString(),
-      '-b:v', targetBitrate,  // Bitrate del preset
-      '-quality', 'good',
-      '-c:a', CONFIG.AUDIO_CODEC,  // libopus
+      '-b:v', preset.videoBitrate,        // '0' para CQ puro, o bitrate para VBR
+      '-row-mt', '1',                     // Multi-thread por filas (VP9)
+      '-speed', String(preset.speed),     // 0-8 (2=bueno, 4=rápido)
+      '-tile-columns', '2',              // Paralelismo de decodificación
+      '-c:a', CONFIG.AUDIO_CODEC,        // libopus
       '-b:a', preset.audioBitrate,
-      '-cpu-used', CONFIG.CPU_USED,  // 2 = mejor calidad
-      '-deadline', CONFIG.DEADLINE,  // 'good' = calidad decente
-      '-auto-alt-ref', CONFIG.AUTO_ALT_REF,  // 1 = mejor compresión
-      '-lag-in-frames', '16',  // Máximo efectivo en VP8
-      '-threads', '4'  // Número de threads
+      '-threads', '4'
     ];
-    
+
     // Añadir filtro de escala si es necesario
     if (scaleFilter) {
       ffmpegArgs.push('-vf', scaleFilter);
     }
-    
+
     // Limitar FPS (solo en algunos modos)
     if (preset.fps) {
       ffmpegArgs.push('-r', String(preset.fps));
@@ -402,138 +329,85 @@ async function convertVideo(videoData) {
 
     ffmpegArgs.push(outputName);
     debugLog('[convertVideo] Argumentos FFmpeg:', ffmpegArgs.join(' '));
-    logVideo(videoData.id, `FFmpeg args: ${ffmpegArgs.join(' ')}`);
-    
-    // Enviar comando a FFmpeg worker
-    const result = await new Promise((resolve, reject) => {
-      let lastProgress = 0;
-      let lastLoggedProgress = 0;
-      let hasStarted = false;
+    logVideo(videoData.id, `VP9 · CRF ${crfValue} · speed ${preset.speed}`);
 
-      // Cancelación
-      state.currentCancelHandler = () => {
-        logVideo(videoData.id, 'Cancelando conversión...');
-        state.ffmpegLoaded = false;
-        state.ffmpeg?.terminate();
-        state.ffmpeg = null;
-        reject(new Error('cancelled'));
-      };
+    // Configurar handler de progreso
+    let lastLoggedProgress = 0;
+    const progressHandler = ({ progress }) => {
+      const pct = Math.min(Math.round(progress * 100), 99);
+      updateVideoProgress(videoData.id, pct);
+      if (pct - lastLoggedProgress >= 10 || pct >= 99) {
+        lastLoggedProgress = pct;
+        logVideo(videoData.id, `Progreso ${pct}%`);
+      }
+    };
+    ffmpeg.on('progress', progressHandler);
 
-      worker.onmessage = (e) => {
-        const msg = e.data;
-        debugLog('[convertVideo] Mensaje del worker:', msg.type);
-        
-        if (msg.type === 'run') {
-          debugLog('[convertVideo] ✓ FFmpeg ha iniciado el trabajo');
-          hasStarted = true;
-          logVideo(videoData.id, 'FFmpeg ha iniciado el trabajo');
-        } else if (msg.type === 'stdout' || msg.type === 'stderr') {
-          const text = msg.data || '';
-          // Registrar en logs solo algunas líneas de stderr para no saturar
-          if (msg.type === 'stderr' && /^(frame=|Input #0|Output #0)/.test(text)) {
-            logVideo(videoData.id, text.trim());
-          }
-          // Extraer frame y tamaño parcial
-          const frameMatch = text.match(/frame=\s*(\d+).*size=\s*([\d\.]+)kB/);
-          if (frameMatch) {
-            videoData.currentFrame = parseInt(frameMatch[1]);
-            videoData.currentSizeKB = parseFloat(frameMatch[2]);
-            updateVideoCard(videoData.id);
-          }
-          // Parsear progreso de FFmpeg (aparece en stderr)
-          const progressMatch = text.match(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/);
-          if (progressMatch && durationSec > 0) {
-            const hours = parseInt(progressMatch[1]);
-            const minutes = parseInt(progressMatch[2]);
-            const seconds = parseFloat(progressMatch[3]);
-            const currentTime = hours * 3600 + minutes * 60 + seconds;
-            const progress = Math.min(Math.round((currentTime / durationSec) * 100), 99);
-            
-            if (progress !== lastProgress) {
-              lastProgress = progress;
-              debugLog('[convertVideo] Progreso:', progress + '%');
-              updateVideoProgress(videoData.id, progress);
-              if (progress - lastLoggedProgress >= 5 || progress >= 99) {
-                lastLoggedProgress = progress;
-                logVideo(videoData.id, `Progreso ${progress}%`);
-              }
-            }
-          }
-        } else if (msg.type === 'exit') {
-          debugLog('[convertVideo] FFmpeg terminó con código:', msg.data);
-        } else if (msg.type === 'done') {
-          debugLog('[convertVideo] ✓ Trabajo completado, procesando resultado...');
-          debugLog('[convertVideo] Resultado recibido:', msg.data);
-          resolve(msg.data);
-        } else if (msg.type === 'error') {
-          console.error('[convertVideo] ✗ Error del worker:', msg.data);
-          logVideo(videoData.id, `Error del worker: ${msg.data}`);
-          reject(new Error(msg.data));
-        }
-      };
+    // Configurar handler de log para extraer frame/size y capturar errores
+    const logHandler = ({ message }) => {
+      console.log('[FFmpeg]', message);
+      const frameMatch = message.match(/frame=\s*(\d+).*size=\s*([\d.]+)kB/);
+      if (frameMatch) {
+        videoData.currentFrame = parseInt(frameMatch[1]);
+        videoData.currentSizeKB = parseFloat(frameMatch[2]);
+        updateVideoCard(videoData.id);
+      }
+      // Loguear líneas relevantes en la UI
+      if (/^(frame=|Input #0|Output #0|Stream|Error|Unknown|Could not|Invalid)/.test(message)) {
+        logVideo(videoData.id, message.trim());
+      }
+    };
+    ffmpeg.on('log', logHandler);
 
-      debugLog('[convertVideo] Enviando comando al worker...');
-      // Guardar args/preset usados para reproducibilidad
-      videoData.presetUsed = { ...preset };
-      videoData.ffmpegArgsUsed = [...ffmpegArgs];
-      worker.postMessage({
-        type: 'run',
-        arguments: ffmpegArgs,
-        MEMFS: [{
-          name: inputName,
-          data: new Uint8Array(fileData)
-        }]
-      });
-    });
+    // Guardar preset usado
+    videoData.presetUsed = { ...preset };
+    videoData.ffmpegArgsUsed = [...ffmpegArgs];
 
-    debugLog('[convertVideo] Buscando archivo de salida en resultado...');
-    debugLog('[convertVideo] Archivos en MEMFS:', result.MEMFS ? result.MEMFS.map(f => f.name) : 'undefined');
-    
-    // Buscar el archivo de salida en los resultados
-    if (!result.MEMFS || !Array.isArray(result.MEMFS)) {
-      console.error('[convertVideo] ✗ MEMFS no está definido o no es un array');
-      throw new Error('Resultado inválido: MEMFS no definido');
-    }
+    // Ejecutar conversión
+    await ffmpeg.exec(ffmpegArgs);
 
-    const outputFile = result.MEMFS.find(f => f.name === outputName);
-    if (!outputFile) {
-      console.error('[convertVideo] ✗ No se encontró el archivo de salida:', outputName);
-      console.error('[convertVideo] Archivos disponibles:', result.MEMFS.map(f => f.name).join(', '));
-      throw new Error('No se generó el archivo de salida');
-    }
+    // Limpiar handlers
+    ffmpeg.off('progress', progressHandler);
+    ffmpeg.off('log', logHandler);
 
-    debugLog('[convertVideo] ✓ Archivo de salida encontrado:', outputFile.name, 'tamaño:', outputFile.data.length, 'bytes');
-
-    // Crear blob del resultado
-    const blob = new Blob([outputFile.data], { type: 'video/webm' });
+    // Leer archivo de salida
+    debugLog('[convertVideo] Leyendo archivo de salida...');
+    const data = await ffmpeg.readFile(outputName);
+    const blob = new Blob([data.buffer], { type: 'video/webm' });
     const url = URL.createObjectURL(blob);
-    debugLog('[convertVideo] ✓ Blob creado, URL:', url);
+
+    // Limpiar archivos temporales del FS virtual
+    try {
+      await ffmpeg.deleteFile(inputName);
+      await ffmpeg.deleteFile(outputName);
+    } catch (_) {}
+
+    // Estadísticas
     const webmSizeMB = (blob.size / (1024 * 1024)).toFixed(2);
     const originalSizeMB = (videoData.originalSize / (1024 * 1024)).toFixed(2);
     const reduction = ((1 - blob.size / videoData.originalSize) * 100).toFixed(1);
     const bitrateKbps = durationSec > 0 ? Math.round((blob.size * 8) / (durationSec * 1000)) : null;
-    logVideo(videoData.id, `✅ COMPLETADO - CRF ${videoData.crf}`);
+    logVideo(videoData.id, `COMPLETADO - CRF ${videoData.crf}`);
     if (bitrateKbps !== null) {
-      logVideo(videoData.id, `📊 Bitrate resultante: ${bitrateKbps} kbps`);
+      logVideo(videoData.id, `Bitrate resultante: ${bitrateKbps} kbps`);
     }
-    logVideo(videoData.id, `💾 Tamaño: ${webmSizeMB} MB (original ${originalSizeMB} MB, -${reduction}%)`);
-    debugLog('[convertVideo] Bitrate calculado:', bitrateKbps, 'kbps');
+    logVideo(videoData.id, `Tamaño: ${webmSizeMB} MB (original ${originalSizeMB} MB, -${reduction}%)`);
 
     // Actualizar estado a "completado"
     updateVideoCompleted(videoData.id, blob, url);
-
-    debugLog('[convertVideo] ✓ Video convertido exitosamente');
     showNotification(`video convertido: ${videoData.originalFile.name}`, 'success');
   } catch (error) {
     console.error('[convertVideo] ✗ Error convirtiendo video:', error);
-    console.error('[convertVideo] Stack trace:', error.stack);
-    state.ffmpegLoaded = false;
-    if (error.message === 'cancelled') {
+    console.error('[convertVideo] Error type:', typeof error, 'keys:', error ? Object.keys(error) : 'null');
+    console.error('[convertVideo] Error message:', error?.message);
+    console.error('[convertVideo] Error stack:', error?.stack);
+    if (error?.message === 'cancelled') {
       updateVideoStatus(videoData.id, 'cancelled', 0);
       logVideo(videoData.id, 'Conversión cancelada');
       showNotification(`conversión cancelada: ${videoData.originalFile.name}`, 'info');
     } else {
-      logVideo(videoData.id, `Error: ${error.message || 'desconocido'}`);
+      const errorMsg = error?.message || String(error) || 'desconocido';
+      logVideo(videoData.id, `Error: ${errorMsg}`);
       updateVideoError(videoData.id, 'error al convertir el video');
       showNotification(`error al convertir: ${videoData.originalFile.name}`, 'error');
     }
@@ -545,12 +419,12 @@ async function convertVideo(videoData) {
 // Manejar archivos seleccionados
 async function handleFiles(files) {
   debugLog('[handleFiles] Archivos recibidos:', files.length);
-  
+
   if (!files || files.length === 0) {
     console.warn('[handleFiles] No se recibieron archivos');
     return;
   }
-  
+
   if (!state.ffmpegLoaded) {
     console.error('[handleFiles] FFmpeg aún no está cargado');
     showNotification('ffmpeg aún se está cargando. por favor, espera un momento.', 'error');
@@ -669,8 +543,8 @@ function renderVideoCard(videoData) {
   card.dataset.videoId = videoData.id;
 
   const originalSizeMB = (videoData.originalSize / (1024 * 1024)).toFixed(2);
-  const duration = videoData.metadata.duration > 0 
-    ? formatDuration(videoData.metadata.duration) 
+  const duration = videoData.metadata.duration > 0
+    ? formatDuration(videoData.metadata.duration)
     : 'desconocida';
 
   card.innerHTML = `
@@ -830,7 +704,7 @@ function updateVideosContainer() {
 
   debugLog('[updateVideosContainer] Total:', totalVideos, 'Completados:', completedVideos);
   videoCount.textContent = `${completedVideos} de ${totalVideos} videos convertidos`;
-  
+
   if (totalVideos > 0) {
     videosContainer.classList.add('visible');
   }
@@ -870,7 +744,7 @@ function removeVideo(id) {
     cancelVideo(id);
     return;
   }
-  
+
   cleanupVideo(id);
 }
 
@@ -883,25 +757,25 @@ function cancelVideo(id) {
     return;
   }
   logVideo(id, 'Solicitando cancelación...');
-  if (state.currentCancelHandler && state.currentVideoId === id) {
-    state.currentCancelHandler();
-  } else if (state.ffmpeg) {
-    state.ffmpeg.terminate();
-    state.ffmpegLoaded = false;
+  // ffmpeg.wasm no tiene cancel nativo, terminamos la instancia
+  if (state.ffmpeg) {
+    try { state.ffmpeg.terminate(); } catch (_) {}
     state.ffmpeg = null;
+    state.ffmpegLoaded = false;
   }
   updateVideoStatus(id, 'cancelled', 0);
   cleanupVideo(id);
+  // Recargar ffmpeg para la siguiente conversión
+  loadFFmpeg();
 }
 
 /**
  * Descarga todos los videos completados en un archivo ZIP
- * Usa JSZip cargado desde CDN para crear el archivo ZIP en memoria
  */
 async function downloadAll() {
   debugLog('[downloadAll] Iniciando descarga de todos los videos en ZIP');
   const completedVideos = state.videos.filter(v => v.status === 'completed');
-  
+
   if (completedVideos.length === 0) {
     console.warn('[downloadAll] No hay videos completados');
     showNotification('no hay videos completados para descargar', 'error');
@@ -917,32 +791,28 @@ async function downloadAll() {
     }
 
     showNotification('creando archivo zip...', 'info');
-    
-    // Crear instancia de JSZip
+
     const zip = new JSZip();
-    
-    // Añadir cada video al ZIP
+
     for (const video of completedVideos) {
       const filename = video.originalFile.name.replace(/\.[^/.]+$/, '') + '.webm';
       debugLog(`[downloadAll] Añadiendo al ZIP: ${filename}`);
       zip.file(filename, video.webmBlob);
     }
-    
-    // Generar el archivo ZIP
+
     debugLog('[downloadAll] Generando archivo ZIP...');
     const zipBlob = await zip.generateAsync({
       type: 'blob',
       compression: 'DEFLATE',
       compressionOptions: { level: 6 }
     });
-    
-    // Descargar el ZIP
+
     const link = document.createElement('a');
     link.href = URL.createObjectURL(zipBlob);
     link.download = `videos_convertidos_${Date.now()}.zip`;
     link.click();
     URL.revokeObjectURL(link.href);
-    
+
     debugLog('[downloadAll] ✓ ZIP descargado exitosamente');
     showNotification(`${completedVideos.length} videos descargados en zip`, 'success');
   } catch (error) {
@@ -953,8 +823,6 @@ async function downloadAll() {
 
 /**
  * Carga un script externo de forma dinámica
- * @param {string} src - URL del script a cargar
- * @returns {Promise} - Promesa que se resuelve cuando el script se carga
  */
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -985,14 +853,12 @@ function logVideo(id, message) {
   const video = state.videos.find(v => v.id === id);
   if (!video) return;
 
-  // Limitar longitud de cada línea para no saturar UI
   const maxLen = 180;
   const safeMessage = message.length > maxLen ? `${message.slice(0, maxLen)}…` : message;
   const timestamp = new Date().toLocaleTimeString('es-ES', { hour12: false });
   const line = `[${timestamp}] ${safeMessage}`;
   video.logs = video.logs || [];
   video.logs.push(line);
-  // Limitar a los últimos 10 mensajes para no crecer sin límite
   if (video.logs.length > 10) {
     video.logs = video.logs.slice(-10);
   }
@@ -1016,9 +882,8 @@ function showNotification(message, type = 'info') {
 
   document.body.appendChild(notification);
 
-  // Apilar: desplazar notificaciones existentes hacia arriba
+  // Apilar notificaciones existentes hacia arriba
   const existing = document.querySelectorAll('.notification');
-  const offset = 0;
   for (let i = existing.length - 1; i >= 0; i--) {
     const n = existing[i];
     const idx = existing.length - 1 - i;
@@ -1031,7 +896,6 @@ function showNotification(message, type = 'info') {
     notification.classList.remove('show');
     setTimeout(() => {
       notification.remove();
-      // Recalcular posiciones tras eliminar
       const remaining = document.querySelectorAll('.notification');
       remaining.forEach((n, i) => {
         n.style.bottom = `${2 + (remaining.length - 1 - i) * 4}rem`;
@@ -1042,12 +906,9 @@ function showNotification(message, type = 'info') {
 
 // Actualizar CRF desde botones
 function updateCRFFromButton(button) {
-  // Remover active de todos los botones
   qualityButtons.forEach(btn => btn.classList.remove('active'));
-  // Agregar active al botón clickeado
   button.classList.add('active');
 
-  // Actualizar modo/preset (data-mode) y CRF asociado
   const mode = (button.dataset.mode || 'medium').toLowerCase();
   state.mode = PRESETS[mode] ? mode : 'medium';
 
@@ -1088,7 +949,7 @@ uploadArea.addEventListener('drop', (e) => {
 fileInput.addEventListener('change', (e) => {
   debugLog('[Event] Change en fileInput - archivos:', e.target.files.length);
   handleFiles(e.target.files);
-  e.target.value = ''; // Reset input
+  e.target.value = '';
 });
 
 downloadAllBtn.addEventListener('click', () => {
@@ -1096,18 +957,18 @@ downloadAllBtn.addEventListener('click', () => {
   downloadAll();
 });
 
-  // Event listeners para botones de calidad
-  qualityButtons.forEach(button => {
-    button.addEventListener('click', () => updateCRFFromButton(button));
-  });
+qualityButtons.forEach(button => {
+  button.addEventListener('click', () => updateCRFFromButton(button));
+});
 
 // Inicializar
 document.addEventListener('DOMContentLoaded', () => {
   debugLog('='.repeat(60));
   debugLog('[INIT] DOM cargado, inicializando aplicación...');
-  debugLog('[INIT] Navegador:', navigator.userAgent);
-  debugLog('[INIT] Soporte Worker:', typeof Worker !== 'undefined');
+  debugLog('[INIT] SharedArrayBuffer:', typeof SharedArrayBuffer !== 'undefined' ? 'disponible' : 'NO disponible');
+  debugLog('[INIT] crossOriginIsolated:', self.crossOriginIsolated);
   debugLog('='.repeat(60));
+
   // Inicializar modo/CRF desde botón activo
   const activeButton = document.querySelector('.quality-btn.active');
   if (activeButton) {
