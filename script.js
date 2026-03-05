@@ -276,6 +276,7 @@ async function convertVideo(videoData) {
 
   try {
     // Actualizar estado a "convirtiendo"
+    videoData.conversionStartTime = Date.now();
     updateVideoStatus(videoData.id, 'converting', 0);
 
     // Escribir archivo de entrada en el FS virtual de ffmpeg.wasm
@@ -639,6 +640,7 @@ function renderVideoCard(videoData) {
         ` : ''}
       </div>
       <div class="video-badges">
+        <span class="badge badge-preset">${(PRESETS[videoData.presetId] || PRESETS.medium).label}</span>
         <span class="badge badge-crf">crf ${videoData.crf}</span>
         ${videoData.metadata.width > 0 ? `<span class="badge badge-res">${videoData.metadata.width}x${videoData.metadata.height}</span>` : ''}
       </div>
@@ -722,6 +724,16 @@ function updateVideoCard(id) {
       const extras = [];
       if (video.currentFrame != null) extras.push(`frame ${video.currentFrame}`);
       if (video.currentSizeKB != null) extras.push(formatSizeMBFromKB(video.currentSizeKB));
+      // ETA basada en tiempo transcurrido y progreso
+      if (video.progress > 5 && video.conversionStartTime) {
+        const elapsed = (Date.now() - video.conversionStartTime) / 1000;
+        const remaining = (elapsed / video.progress) * (100 - video.progress);
+        if (remaining < 60) {
+          extras.push(`~${Math.round(remaining)}s`);
+        } else {
+          extras.push(`~${Math.floor(remaining / 60)}m ${Math.round(remaining % 60)}s`);
+        }
+      }
       if (extras.length) {
         statusMessage += ` · ${extras.join(' · ')}`;
       }
@@ -1128,6 +1140,24 @@ fileInput.addEventListener('change', (e) => {
 downloadAllBtn.addEventListener('click', () => {
   debugLog('[Event] Click en downloadAllBtn');
   downloadAll();
+});
+
+// Pegar desde clipboard (Ctrl+V / Cmd+V)
+document.addEventListener('paste', (e) => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  const files = [];
+  for (const item of items) {
+    if (item.kind === 'file' && item.type.startsWith('video/')) {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  if (files.length > 0) {
+    e.preventDefault();
+    handleFiles(files);
+    showNotification(`${files.length} ${files.length === 1 ? 'vídeo pegado' : 'vídeos pegados'} desde el portapapeles`, 'info');
+  }
 });
 
 qualityButtons.forEach(button => {
