@@ -86,7 +86,9 @@ const state = {
   ffmpegLoaded: false,
   isLoadingFFmpeg: false,
   currentVideoId: null,
-  currentCancelHandler: null
+  currentCancelHandler: null,
+  isConverting: false,
+  pendingQueue: []
 };
 
 // Formatea tamaño desde KB a cadena MB con dos decimales
@@ -425,22 +427,20 @@ async function convertVideo(videoData) {
     // Estadísticas
     const webmSizeMB = (blob.size / (1024 * 1024)).toFixed(2);
     const originalSizeMB = (videoData.originalSize / (1024 * 1024)).toFixed(2);
-    const reduction = ((1 - blob.size / videoData.originalSize) * 100).toFixed(1);
+    const reductionNum = (1 - blob.size / videoData.originalSize) * 100;
+    const reductionLabel = reductionNum >= 0 ? `-${reductionNum.toFixed(1)}%` : `+${Math.abs(reductionNum).toFixed(1)}%`;
     const bitrateKbps = durationSec > 0 ? Math.round((blob.size * 8) / (durationSec * 1000)) : null;
     logVideo(videoData.id, `COMPLETADO - CRF ${videoData.crf}`);
     if (bitrateKbps !== null) {
       logVideo(videoData.id, `Bitrate resultante: ${bitrateKbps} kbps`);
     }
-    logVideo(videoData.id, `Tamaño: ${webmSizeMB} MB (original ${originalSizeMB} MB, -${reduction}%)`);
+    logVideo(videoData.id, `Tamaño: ${webmSizeMB} MB (original ${originalSizeMB} MB, ${reductionLabel})`);
 
     // Actualizar estado a "completado"
     updateVideoCompleted(videoData.id, blob, url);
     showNotification(`video convertido: ${videoData.originalFile.name}`, 'success');
   } catch (error) {
     console.error('[convertVideo] ✗ Error convirtiendo video:', error);
-    console.error('[convertVideo] Error type:', typeof error, 'keys:', error ? Object.keys(error) : 'null');
-    console.error('[convertVideo] Error message:', error?.message);
-    console.error('[convertVideo] Error stack:', error?.stack);
 
     // Limpiar WORKERFS si estaba montado
     if (usedWorkerFS) {
@@ -450,13 +450,15 @@ async function convertVideo(videoData) {
       } catch (_) {}
     }
 
-    if (error?.message === 'cancelled') {
+    // Si fue cancelado por cancelVideo(), ya está manejado
+    if (videoData.status === 'cancelled') {
+      debugLog('[convertVideo] Conversión cancelada por el usuario');
+    } else if (error?.message === 'cancelled') {
       updateVideoStatus(videoData.id, 'cancelled', 0);
       logVideo(videoData.id, 'Conversión cancelada');
       showNotification(`conversión cancelada: ${videoData.originalFile.name}`, 'info');
     } else {
       const errorStr = error?.message || String(error) || 'desconocido';
-      // Detectar errores de memoria para dar un mensaje más claro
       const isMemoryError = errorStr.includes('memory') || errorStr.includes('out of bounds') || errorStr.includes('OOM');
       const errorMsg = isMemoryError
         ? `Sin memoria suficiente para este archivo (${(videoData.originalSize / (1024 * 1024)).toFixed(0)} MB). Prueba un archivo más pequeño.`
@@ -503,11 +505,12 @@ async function handleFiles(files) {
   }
 
   // Crear objetos VideoData para cada archivo
+  const newIds = [];
   for (const file of videoFiles) {
     debugLog('[handleFiles] Procesando archivo:', file.name, 'tipo:', file.type, 'tamaño:', file.size);
     const metadata = await extractMetadata(file);
     const videoData = {
-      id: `${file.name}_mode${state.mode}_crf${state.crf}_${Date.now()}`,
+      id: crypto.randomUUID(),
       presetId: state.mode,
       originalFile: file,
       originalSize: file.size,
@@ -526,20 +529,39 @@ async function handleFiles(files) {
     debugLog('[handleFiles] VideoData creado:', videoData.id);
     state.videos.push(videoData);
     renderVideoCard(videoData);
+    newIds.push(videoData.id);
   }
 
   updateVideosContainer();
 
-  // Convertir videos uno por uno
-  debugLog('[handleFiles] Iniciando conversión de', videoFiles.length, 'videos...');
-  for (const file of videoFiles) {
-    const videoData = state.videos.find(v => v.originalFile === file);
-    if (videoData) {
-      debugLog('[handleFiles] Convirtiendo:', videoData.id);
-      await convertVideo(videoData);
+  // Añadir a la cola y procesar
+  state.pendingQueue.push(...newIds);
+  processQueue();
+}
+
+// Cola de conversión secuencial (evita que dos conversiones corran a la vez en FFmpeg)
+async function processQueue() {
+  if (state.isConverting) return;
+  state.isConverting = true;
+
+  while (state.pendingQueue.length > 0) {
+    const nextId = state.pendingQueue.shift();
+    const videoData = state.videos.find(v => v.id === nextId);
+    if (!videoData || videoData.status === 'cancelled') continue;
+
+    if (!state.ffmpegLoaded) {
+      await loadFFmpeg();
+      if (!state.ffmpegLoaded) {
+        updateVideoError(nextId, 'ffmpeg no pudo cargarse');
+        continue;
+      }
     }
+
+    await convertVideo(videoData);
   }
-  debugLog('[handleFiles] ✓ Todas las conversiones completadas');
+
+  state.isConverting = false;
+  debugLog('[processQueue] ✓ Cola de conversión vacía');
 }
 
 // Actualizar estado del video
@@ -588,6 +610,9 @@ function updateVideoError(id, errorMessage) {
   }
 }
 
+// SVG del botón eliminar
+const REMOVE_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M5.5 5.5L10.5 10.5M10.5 5.5L5.5 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+
 // Renderizar tarjeta de video
 function renderVideoCard(videoData) {
   debugLog('[renderVideoCard]', videoData.id);
@@ -620,7 +645,7 @@ function renderVideoCard(videoData) {
     </div>
     <div class="video-status">
       <div class="status-text">esperando...</div>
-      <div class="progress-bar">
+      <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
         <div class="progress-fill" style="width: 0%"></div>
       </div>
     </div>
@@ -633,10 +658,8 @@ function renderVideoCard(videoData) {
         </svg>
         descargar
       </button>
-      <button class="btn-remove" onclick="removeVideo('${videoData.id}')">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <path d="M5.5 5.5L10.5 10.5M10.5 5.5L5.5 10.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-        </svg>
+      <button class="btn-remove" title="eliminar">
+        ${REMOVE_SVG}
       </button>
     </div>
   `;
@@ -644,9 +667,7 @@ function renderVideoCard(videoData) {
   videosList.appendChild(card);
 
   const removeBtn = card.querySelector('.btn-remove');
-  if (removeBtn) {
-    removeBtn.dataset.icon = removeBtn.innerHTML;
-  }
+  removeBtn.addEventListener('click', () => removeVideo(videoData.id));
 }
 
 // Actualizar tarjeta de video
@@ -658,6 +679,7 @@ function updateVideoCard(id) {
   if (!video) return;
 
   const statusText = card.querySelector('.status-text');
+  const progressBar = card.querySelector('.progress-bar');
   const progressFill = card.querySelector('.progress-fill');
   const downloadBtn = card.querySelector('.btn-download');
   const badgeCrf = card.querySelector('.badge-crf');
@@ -675,13 +697,18 @@ function updateVideoCard(id) {
     }
   }
 
+  // Reset clases de estado
+  statusText.className = 'status-text';
+  progressFill.className = 'progress-fill';
+
   switch (video.status) {
     case 'pending':
       statusText.textContent = 'esperando...';
       progressFill.style.width = '0%';
+      if (progressBar) progressBar.setAttribute('aria-valuenow', '0');
       downloadBtn.disabled = true;
       if (removeBtn) {
-        removeBtn.innerHTML = removeBtn.dataset.icon || removeBtn.innerHTML;
+        removeBtn.innerHTML = REMOVE_SVG;
         removeBtn.title = 'eliminar';
         removeBtn.onclick = () => removeVideo(id);
       }
@@ -696,10 +723,11 @@ function updateVideoCard(id) {
       if (video.currentFrame != null) extras.push(`frame ${video.currentFrame}`);
       if (video.currentSizeKB != null) extras.push(formatSizeMBFromKB(video.currentSizeKB));
       if (extras.length) {
-        statusMessage += ` • ${extras.join(' • ')}`;
+        statusMessage += ` · ${extras.join(' · ')}`;
       }
       statusText.textContent = statusMessage;
       progressFill.style.width = `${video.progress}%`;
+      if (progressBar) progressBar.setAttribute('aria-valuenow', String(video.progress));
       downloadBtn.disabled = true;
       if (removeBtn) {
         removeBtn.textContent = 'cancelar';
@@ -708,29 +736,32 @@ function updateVideoCard(id) {
       }
       break;
 
-    case 'completed':
+    case 'completed': {
       const webmSizeMB = (video.webmSize / (1024 * 1024)).toFixed(2);
-      const reduction = ((1 - video.webmSize / video.originalSize) * 100).toFixed(1);
-      statusText.textContent = `completado - ${webmSizeMB} MB (-${reduction}%) - crf ${video.crf}`;
-      statusText.style.color = '#10b981';
+      const reductionNum = (1 - video.webmSize / video.originalSize) * 100;
+      const reductionLabel = reductionNum >= 0 ? `-${reductionNum.toFixed(1)}%` : `+${Math.abs(reductionNum).toFixed(1)}%`;
+      statusText.textContent = `completado - ${webmSizeMB} MB (${reductionLabel}) - crf ${video.crf}`;
+      statusText.classList.add('status-success');
       progressFill.style.width = '100%';
-      progressFill.style.backgroundColor = '#10b981';
+      progressFill.classList.add('progress-success');
+      if (progressBar) progressBar.setAttribute('aria-valuenow', '100');
       downloadBtn.disabled = false;
       downloadBtn.onclick = () => downloadVideo(id);
       if (removeBtn) {
-        removeBtn.innerHTML = removeBtn.dataset.icon || removeBtn.innerHTML;
+        removeBtn.innerHTML = REMOVE_SVG;
         removeBtn.title = 'eliminar';
         removeBtn.onclick = () => removeVideo(id);
       }
       break;
+    }
 
     case 'error':
       statusText.textContent = video.errorMessage || 'error al convertir';
-      statusText.style.color = '#ef4444';
+      statusText.classList.add('status-error');
       progressFill.style.width = '0%';
       downloadBtn.disabled = true;
       if (removeBtn) {
-        removeBtn.innerHTML = removeBtn.dataset.icon || removeBtn.innerHTML;
+        removeBtn.innerHTML = REMOVE_SVG;
         removeBtn.title = 'eliminar';
         removeBtn.onclick = () => removeVideo(id);
       }
@@ -738,12 +769,12 @@ function updateVideoCard(id) {
 
     case 'cancelled':
       statusText.textContent = 'cancelado';
-      statusText.style.color = '#6b7280';
+      statusText.classList.add('status-cancelled');
       progressFill.style.width = '0%';
-      progressFill.style.backgroundColor = '#d1d5db';
+      progressFill.classList.add('progress-cancelled');
       downloadBtn.disabled = true;
       if (removeBtn) {
-        removeBtn.innerHTML = removeBtn.dataset.icon || removeBtn.innerHTML;
+        removeBtn.innerHTML = REMOVE_SVG;
         removeBtn.title = 'eliminar';
         removeBtn.onclick = () => removeVideo(id);
       }
@@ -854,13 +885,8 @@ function downloadVideo(id) {
 // Eliminar video
 function removeVideo(id) {
   debugLog('[removeVideo]', id);
-  const index = state.videos.findIndex(v => v.id === id);
-  if (index === -1) {
-    console.error('[removeVideo] Video no encontrado');
-    return;
-  }
-
-  const video = state.videos[index];
+  const video = state.videos.find(v => v.id === id);
+  if (!video) return;
 
   // Si está convirtiendo, cancelar primero
   if (video.status === 'converting') {
@@ -868,6 +894,8 @@ function removeVideo(id) {
     return;
   }
 
+  // Si está pendiente en cola, quitarlo
+  state.pendingQueue = state.pendingQueue.filter(qId => qId !== id);
   cleanupVideo(id);
 }
 
@@ -875,21 +903,35 @@ function removeVideo(id) {
 function cancelVideo(id) {
   const video = state.videos.find(v => v.id === id);
   if (!video) return;
+
+  if (video.status === 'pending') {
+    state.pendingQueue = state.pendingQueue.filter(qId => qId !== id);
+    cleanupVideo(id);
+    return;
+  }
+
   if (video.status !== 'converting') {
     cleanupVideo(id);
     return;
   }
+
+  // Marcar como cancelado antes de terminar FFmpeg
+  video.status = 'cancelled';
   logVideo(id, 'Solicitando cancelación...');
+
   // ffmpeg.wasm no tiene cancel nativo, terminamos la instancia
   if (state.ffmpeg) {
     try { state.ffmpeg.terminate(); } catch (_) {}
     state.ffmpeg = null;
     state.ffmpegLoaded = false;
   }
-  updateVideoStatus(id, 'cancelled', 0);
-  cleanupVideo(id);
-  // Recargar ffmpeg para la siguiente conversión
-  loadFFmpeg();
+
+  state.isConverting = false;
+  updateVideoCard(id);
+  showNotification(`conversión cancelada: ${video.originalFile.name}`, 'info');
+
+  // Recargar ffmpeg y continuar con la cola
+  loadFFmpeg().then(() => processQueue());
 }
 
 /**
@@ -916,13 +958,18 @@ async function downloadAll() {
     showNotification('creando archivo zip...', 'info');
 
     const zip = new JSZip();
+    const nameCounts = {};
 
     for (const video of completedVideos) {
       const baseName = getOutputBaseName(video);
-      debugLog(`[downloadAll] Añadiendo al ZIP: ${baseName}.webm`);
-      zip.file(`${baseName}.webm`, video.webmBlob);
+      const count = (nameCounts[baseName] || 0) + 1;
+      nameCounts[baseName] = count;
+      const filename = count === 1 ? `${baseName}.webm` : `${baseName}-${count}.webm`;
+      debugLog(`[downloadAll] Añadiendo al ZIP: ${filename}`);
+      zip.file(filename, video.webmBlob);
       if (CONFIG.DEBUG_LOGS) {
-        zip.file(`${baseName}_log.txt`, buildLogText(video));
+        const logName = count === 1 ? `${baseName}_log.txt` : `${baseName}-${count}_log.txt`;
+        zip.file(logName, buildLogText(video));
       }
     }
 
@@ -1109,7 +1156,7 @@ async function handleTripleConvert(file) {
   const videoDataList = presetOrder.map(presetId => {
     const preset = PRESETS[presetId];
     const videoData = {
-      id: `${file.name}_mode${presetId}_crf${preset.crf}_${Date.now()}`,
+      id: crypto.randomUUID(),
       presetId,
       originalFile: file,
       originalSize: file.size,
