@@ -377,9 +377,13 @@ body {
 
 /* Branding Badge */
 .branding-badge {
-  margin: 3rem 0 2rem;
+  position: fixed;
+  bottom: 10dvh;
+  left: 50%;
+  transform: translateX(-50%);
   text-align: center;
   font-size: 0.65rem;
+  z-index: 10;
 }
 
 .branding-badge a {
@@ -474,10 +478,6 @@ body {
   .quality-btn {
     max-width: none;
     padding: 0.6rem 1rem;
-  }
-
-  .branding-badge {
-    margin: 2rem 0 1.5rem;
   }
 
   .video-card {
