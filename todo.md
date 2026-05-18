@@ -12,6 +12,7 @@
 - [ ] re-convertir con otro preset sin volver a subir el archivo
 - [ ] pegar desde clipboard (Ctrl+V / Cmd+V)
 - [ ] open graph tags para compartir en redes
+- [x] drag & drop para reordenar videos antes del ZIP (SortableJS)
 
 ## notas sobre VP9
 

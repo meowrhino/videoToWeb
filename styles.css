@@ -483,3 +483,34 @@ body {
     padding: 0.85rem;
   }
 }
+
+/* ============================================================ */
+/* Drag & drop para reordenar (SortableJS)                      */
+/* ============================================================ */
+.video-card {
+  cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+}
+.video-card:active {
+  cursor: grabbing;
+}
+
+/* placeholder (hueco) donde caerá el elemento */
+.card-ghost {
+  opacity: 0.4;
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* el item seleccionado (mientras se mantiene el clic) */
+.card-chosen {
+  box-shadow: var(--shadow-hover);
+  border-color: var(--border-hover);
+}
+
+/* el clon visible que sigue al cursor durante el drag */
+.card-dragging {
+  opacity: 0.9;
+  cursor: grabbing;
+}

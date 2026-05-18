@@ -1142,6 +1142,24 @@ downloadAllBtn.addEventListener('click', () => {
   downloadAll();
 });
 
+// Drag & drop para reordenar videos (desktop + touch via SortableJS).
+// El orden del array state.videos determina el orden del ZIP final (downloadAll),
+// así que basta con reordenar el array para que el resultado refleje el nuevo orden.
+if (typeof Sortable !== 'undefined') {
+  Sortable.create(videosList, {
+    animation: 150,
+    ghostClass: 'card-ghost',
+    chosenClass: 'card-chosen',
+    dragClass: 'card-dragging',
+    onEnd: ({ oldIndex, newIndex }) => {
+      if (oldIndex === newIndex) return;
+      const [moved] = state.videos.splice(oldIndex, 1);
+      state.videos.splice(newIndex, 0, moved);
+      debugLog(`[Reorder] ${oldIndex} → ${newIndex}`);
+    }
+  });
+}
+
 // Pegar desde clipboard (Ctrl+V / Cmd+V)
 document.addEventListener('paste', (e) => {
   const items = e.clipboardData?.items;

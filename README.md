@@ -9,6 +9,7 @@
 - 📱 **Responsive** - Funciona en desktop y móvil
 - ⚡ **Rápido** - Procesamiento local con FFmpeg.js
 - 🎨 **Interfaz simple** - Arrastra, suelta, descarga
+- 🔀 **Reordena arrastrando** - Cambia el orden de los videos antes de descargar el ZIP (también con touch en móvil)
 - 🔒 **Privado** - Tus videos nunca salen de tu dispositivo
 - 📐 **Auto-escalado** - Optimiza automáticamente a 720p HD
 
@@ -21,7 +22,8 @@
    - **Máxima Compresión**: Para videos estáticos o muy largos
 3. Arrastra tus videos o haz clic para seleccionar
 4. Espera a que se compriman
-5. Descarga tus videos optimizados en WebM
+5. (Opcional) Arrastra las tarjetas de video para reordenarlas antes de descargar el ZIP
+6. Descarga tus videos optimizados en WebM
 
 ## 🎛️ Opciones de Compresión
 
