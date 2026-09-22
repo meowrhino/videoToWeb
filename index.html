@@ -33,37 +33,37 @@
       <h3 id="uploadTitle">arrastra vídeos aquí o haz clic para seleccionar</h3>
       <p id="uploadSubtitle">soporta mp4, mov, avi, mkv, flv y más formatos</p>
       <button class="btn-primary" id="selectBtn">seleccionar archivos</button>
-      <input type="file" id="fileInput" accept="video/*" multiple hidden>
+      <input type="file" id="fileInput" accept="video/*,.mkv,.flv,.avi,.wmv,.mts,.m2ts,.ts,.3gp" multiple hidden>
     </div>
 
     <!-- Controls -->
     <div class="quality-buttons">
-      <button class="quality-btn" data-mode="high">
+      <button class="quality-btn" data-mode="high" aria-pressed="false">
         <strong>1080</strong>
         <small>más calidad · más peso</small>
       </button>
-      <button class="quality-btn active" data-mode="medium">
+      <button class="quality-btn active" data-mode="medium" aria-pressed="true">
         <strong>720p</strong>
         <small>recomendado</small>
       </button>
-      <button class="quality-btn" data-mode="low">
+      <button class="quality-btn" data-mode="low" aria-pressed="false">
         <strong>480p</strong>
         <small>más ligero</small>
       </button>
     </div>
 
-    <!-- DEBUG: Convertir en las 3 calidades a la vez (quitar cuando no se necesite) -->
-    <div id="debugTriple" style="text-align:center; margin-bottom:1rem; display:none;">
-      <button id="debugTripleBtn" class="btn-secondary" style="opacity:0.7; font-size:0.85rem;">
+    <!-- DEBUG: convertir en las 3 calidades a la vez (visible solo con CONFIG.DEBUG_LOGS) -->
+    <div id="debugTriple" class="debug-triple" hidden>
+      <button id="debugTripleBtn" class="btn-secondary">
         convertir en las 3 calidades
       </button>
-      <input type="file" id="debugTripleInput" accept="video/*" hidden>
+      <input type="file" id="debugTripleInput" accept="video/*,.mkv,.flv,.avi,.wmv,.mts,.m2ts,.ts,.3gp" hidden>
     </div>
 
     <!-- Videos Grid -->
     <div id="videosContainer" class="videos-grid">
       <div class="grid-header">
-        <h3 id="videoCount">0 videos comprimidos</h3>
+        <h3 id="videoCount" aria-live="polite">0 videos convertidos</h3>
         <button class="btn-secondary" id="downloadAllBtn">descargar todo</button>
       </div>
       <div id="videosList" class="videos-list"></div>
@@ -77,6 +77,6 @@
 
   <script src="ffmpeg.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
-  <script src="script.js"></script>
+  <script type="module" src="js/main.js"></script>
 </body>
 </html>

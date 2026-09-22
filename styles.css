@@ -4,6 +4,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 :root {
   --bg: #ffffff;
   --card: #ffffff;
@@ -367,6 +371,13 @@ body {
   margin-bottom: 0.2rem;
 }
 
+/* los logs se pueden seleccionar aunque la tarjeta sea arrastrable */
+.video-logs {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+
 .video-actions {
   display: flex;
   gap: 0.4rem;
@@ -375,6 +386,16 @@ body {
 
 .video-actions .btn-download {
   flex: 1;
+}
+
+/* Debug */
+.debug-triple {
+  text-align: center;
+  margin-bottom: 1rem;
+}
+
+.debug-triple .btn-secondary {
+  opacity: 0.7;
 }
 
 /* Branding Badge */
