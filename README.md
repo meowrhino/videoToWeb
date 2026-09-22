@@ -1,170 +1,80 @@
-# videoToLilVideo 🎬
+# videoToWeb 🎬
 
-**Compresor de video WebM optimizado para web** - Reduce el tamaño de tus videos hasta un 90% manteniendo excelente calidad.
+**Conversor de vídeos a WebM en el navegador.** Sin backend y sin subir nada a ningún servidor: todo se procesa en tu dispositivo con [ffmpeg.wasm](https://github.com/ffmpegwasm/ffmpeg.wasm).
+
+👉 https://meowrhino.github.io/videoToWeb/
 
 ## ✨ Características
 
-- 🎯 **3 Opciones de Compresión** - Alta Calidad, Balance, Máxima Compresión
-- 🌐 **100% en el navegador** - Sin backend, sin uploads a servidores
-- 📱 **Responsive** - Funciona en desktop y móvil
-- ⚡ **Rápido** - Procesamiento local con FFmpeg.js
-- 🎨 **Interfaz simple** - Arrastra, suelta, descarga
-- 🔀 **Reordena arrastrando** - Cambia el orden de los videos antes de descargar el ZIP (también con touch en móvil)
-- 🔒 **Privado** - Tus videos nunca salen de tu dispositivo
-- 📐 **Auto-escalado** - Optimiza automáticamente a 720p HD
+- 🔒 **Privado**: los vídeos nunca salen de tu dispositivo
+- 🎯 **3 calidades**: 1080, 720p (recomendado) y 480p
+- 📥 **Varias formas de añadir vídeos**: arrastrar, seleccionar o pegar (Ctrl+V / Cmd+V)
+- 🧵 **Cola secuencial** con progreso, ETA y cancelación
+- 🔀 **Reordenar** tarjetas arrastrando (también en móvil, manteniendo pulsado) antes de descargar el ZIP
+- 📦 **Descarga individual o en ZIP**
 
-## 🚀 Uso
+## 🎛️ Presets
 
-1. Abre videoToLilVideo
-2. Selecciona tu opción de compresión:
-   - **Alta Calidad**: Para videos con movimiento
-   - **Balance**: Recomendado para uso general ⭐
-   - **Máxima Compresión**: Para videos estáticos o muy largos
-3. Arrastra tus videos o haz clic para seleccionar
-4. Espera a que se compriman
-5. (Opcional) Arrastra las tarjetas de video para reordenarlas antes de descargar el ZIP
-6. Descarga tus videos optimizados en WebM
+VP8 en modo VBR limitado: el CRF marca el piso de calidad y `-b:v` el techo de bitrate. El vídeo solo se reduce (nunca se amplía) y se mantiene la relación de aspecto.
 
-## 🎛️ Opciones de Compresión
+| Preset | Resolución máx. | CRF | Techo vídeo | Audio | cpu-used | FPS |
+|---|---|---|---|---|---|---|
+| 1080 | 1920×1080 | 10 | 1500k | 128k | 4 | original |
+| 720p ⭐ | 1280×720 | 20 | 1200k | 96k | 5 | original |
+| 480p | 854×480 | 33 | 800k | 96k | 8 | 24 |
 
-### Alta Calidad (CRF 30)
-- **Bitrate máximo**: 2500 kbps
-- **Tamaño esperado**: ~10-12 MB (para 720p, 40s)
-- **Reducción**: ~75-80%
-- **Ideal para**: Videos con movimiento, deportes, gaming
-- **Calidad**: ★★★★★ Excelente
-
-### Balance (CRF 33) ⭐ Recomendado
-- **Bitrate máximo**: 1500 kbps
-- **Tamaño esperado**: ~6-8 MB (para 720p, 40s)
-- **Reducción**: ~84-88%
-- **Ideal para**: Uso general, videos corporativos, tutoriales
-- **Calidad**: ★★★★☆ Muy buena
-
-### Máxima Compresión (CRF 37)
-- **Bitrate máximo**: 1000 kbps
-- **Tamaño esperado**: ~4-5 MB (para 720p, 40s)
-- **Reducción**: ~90-92%
-- **Ideal para**: Presentaciones, videos estáticos, videos muy largos
-- **Calidad**: ★★★☆☆ Buena
+Se configuran en [`js/config.js`](js/config.js).
 
 ## 🔧 Tecnología
 
-- **FFmpeg.js** - FFmpeg compilado a WebAssembly
-- **VP8 (libvpx)** - Codec de video optimizado con bitrates específicos
-- **Opus** - Codec de audio de alta calidad
-- **HTML5** + **CSS3** + **Vanilla JavaScript**
+- **ffmpeg.wasm 0.12** con core multi-thread (`@ffmpeg/core-mt`, ~31 MB desde jsDelivr)
+- **VP8 (`libvpx`) + Vorbis (`libvorbis`)** en contenedor WebM
+  - VP9 da mejor compresión, pero en ffmpeg.wasm se queda sin memoria (issues #679 y #786)
+  - Opus provoca un stack overflow en WASM (issue #591)
+- **[coi-serviceworker](https://github.com/gzuidhof/coi-serviceworker)** añade los headers COOP/COEP necesarios para usar `SharedArrayBuffer` en GitHub Pages. La primera visita recarga la página una vez.
+- Los archivos de ≥200 MB se montan con **WORKERFS**, que los lee directamente sin copiarlos a la memoria WASM
+- HTML + CSS + JavaScript con módulos ES nativos, sin paso de build
+- [SortableJS](https://github.com/SortableJS/Sortable) para reordenar y [JSZip](https://stuk.github.io/jszip/) (se carga solo al pulsar "descargar todo")
 
-### Parámetros Técnicos
+## 📁 Estructura
 
-**VP8 con Bitrates Específicos**:
-- Codec: libvpx (VP8)
-- Resolución máxima: 720p HD (evita OOM)
-- CRF range: 30-37 (menor = mejor calidad)
-- Bitrates máximos: 2500k (Alta), 1500k (Balance), 1000k (Máxima)
-- CPU-used: 2 (mejor calidad)
-- Auto-alt-ref: 1 (mejor compresión)
-
-## 📊 Resultados Esperados
-
-| Video Original | Alta Calidad | Balance | Máxima | Mejor Opción |
-|----------------|--------------|---------|--------|--------------|
-| 50 MB (720p, 40s) | ~11 MB | ~7 MB | ~5 MB | Balance |
-| 100 MB (1080p→720p) | ~11 MB | ~7 MB | ~5 MB | Balance |
-| 200 MB (4K→720p) | ~11 MB | ~7 MB | ~5 MB | Máxima |
-
-*Resultados aproximados. Pueden variar según el contenido del video.*
-
-## ⚙️ Configuración Avanzada
-
-Puedes modificar `script.js` para ajustar parámetros:
-
-```javascript
-const CONFIG = {
-  MAX_WIDTH: 1280,                    // Ancho máximo (720p HD)
-  MAX_HEIGHT: 720,                    // Alto máximo (720p HD)
-  
-  // Bitrates máximos por opción
-  VIDEO_BITRATE_ALTA: '2500k',        // Alta Calidad
-  VIDEO_BITRATE_BALANCE: '1500k',     // Balance
-  VIDEO_BITRATE_MAXIMA: '1000k',      // Máxima Compresión
-  
-  CRF_MIN: 30,                        // CRF para Alta Calidad
-  DEFAULT_CRF: 33,                    // CRF para Balance
-  CRF_MAX: 37,                        // CRF para Máxima
-  
-  VIDEO_CODEC: 'libvpx',              // VP8 codec
-  AUDIO_CODEC: 'libopus',             // Opus codec
-  CPU_USED: '2',                      // Velocidad encoding
-  AUTO_ALT_REF: '1',                  // Mejor compresión
-};
+```
+index.html            página
+styles.css            estilos
+coi-serviceworker.js  headers COOP/COEP (SharedArrayBuffer)
+ffmpeg.js             @ffmpeg/ffmpeg 0.12 (UMD)
+814.ffmpeg.js         worker que carga ffmpeg.js (no borrar)
+js/
+  main.js             punto de entrada: eventos del DOM
+  config.js           CONFIG y PRESETS
+  state.js            estado global y creación de videos
+  queue.js            añadir archivos, cola secuencial, cancelar/eliminar
+  converter.js        argumentos de ffmpeg y conversión de un video
+  ffmpeg-loader.js    carga/terminación de ffmpeg.wasm
+  metadata.js         duración y resolución vía <video>
+  downloads.js        descarga individual, ZIP y log
+  utils.js            formateo y helpers
+  ui/dom.js           referencias al DOM y estado del área de subida
+  ui/cards.js         render y actualización de tarjetas
+  ui/notifications.js avisos flotantes
 ```
 
-## 🐛 Limitaciones Conocidas
+## 🧪 Desarrollo local
 
-- **Videos muy largos (>30 min)** pueden causar problemas de memoria en el navegador
-- **Videos >720p** son escalados automáticamente a 720p para evitar OOM
-- **Navegadores antiguos** sin soporte WebAssembly no funcionarán
-- **VP8 requiere bitrate máximo** para que CRF funcione correctamente
+Los módulos ES y el service worker necesitan un servidor HTTP (no funciona abriendo el archivo con `file://`):
 
-## 💡 Consejos de Uso
+```bash
+python3 -m http.server 5503
+```
 
-### Por Tipo de Video
+Luego abre http://localhost:5503. Con `CONFIG.DEBUG_LOGS = true` se activan los logs en consola, la descarga del log de cada conversión y un botón para convertir un mismo vídeo en las 3 calidades.
 
-| Tipo de Video | Opción Recomendada | CRF |
-|---------------|-------------------|-----|
-| Deportes, acción, gaming | Alta Calidad | 30 |
-| Tutoriales, vlogs, corporativos | Balance | 33 |
-| Presentaciones, screencasts | Máxima Compresión | 37 |
-| Videos muy largos (>30 min) | Máxima Compresión | 37 |
+## 🐛 Limitaciones
 
-### Consejos Generales
-
-- **Para videos grandes**: Considera dividirlos antes de comprimir
-- **Primera vez**: Prueba las 3 opciones con el mismo video para comparar
-- **Videos con mucho movimiento**: Usa Alta Calidad (CRF 30)
-- **Videos estáticos**: Usa Máxima Compresión (CRF 37)
-- **Compatibilidad**: WebM es soportado por todos los navegadores modernos
-
-## 🆚 Diferencias con videoToWeb
-
-| Característica | videoToWeb | videoToLilVideo |
-|----------------|------------|-----------------|
-| Codec | VP8 | VP8 con bitrates específicos |
-| Opciones | Slider CRF | 3 opciones predefinidas |
-| Compresión | Buena | Mejor (~30% mejor) |
-| Velocidad | Rápida | Rápida |
-| Resolución máx | 720p | 720p |
-| CRF range | 24-38 | 30-37 |
-| Bitrate | Variable | Específico por opción |
-| Objetivo | Conversión rápida | Mejor compresión |
-| Interfaz | Slider técnico | Botones simples |
-
-## 📁 Documentación Técnica
-
-Toda la investigación y proceso de desarrollo está documentado en la carpeta [`procesoManus/`](./procesoManus/):
-
-- **INFORME_FINAL.md** - Resumen ejecutivo del proyecto
-- **INFORME_ANALISIS_PROBLEMA_CRF.md** - Análisis técnico del problema VP8 CRF
-- **analisis_configuraciones_vp8.md** - Comparativa de configuraciones probadas
-- **guia_opciones_calidad.md** - Guía de uso de las 3 opciones
-- Y más documentos de investigación y debugging
+- La memoria de WASM es limitada: los archivos muy grandes (>500 MB) o muy largos pueden fallar
+- Hace falta un navegador moderno con WebAssembly y `SharedArrayBuffer`
+- Si el navegador no sabe decodificar el formato (p. ej. HEVC), la tarjeta no muestra duración ni resolución, pero la conversión funciona igual
 
 ## 🤝 Créditos
 
-Creado por [meowrhino.studio](https://meowrhino.studio)
-
-Powered by:
-- [FFmpeg.js / ffmpeg.wasm](https://github.com/ffmpegwasm/ffmpeg.wasm)
-- [VP8 Codec](https://www.webmproject.org/vp8/)
-- [Opus Audio Codec](https://opus-codec.org/)
-
-## 📄 Licencia
-
-MIT License - Úsalo libremente
-
----
-
-**¿Necesitas comprimir videos para tu web?** videoToLilVideo es la herramienta perfecta para reducir el peso sin sacrificar calidad.
-
-🎯 **3 opciones simples** | 🚀 **100% en el navegador** | 🔒 **Totalmente privado**
+Creado por [meowrhino.studio](https://meowrhino.studio). Licencia MIT.
