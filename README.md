@@ -7,7 +7,7 @@
 ## ✨ Características
 
 - 🔒 **Privado**: los vídeos nunca salen de tu dispositivo
-- 🎯 **3 calidades**: 1080, 720p (recomendado) y 480p
+- 🎯 **3 calidades**: 1080, 720p (recomendado) y 480p, y un modo **loop** para webs
 - 📥 **Varias formas de añadir vídeos**: arrastrar, seleccionar o pegar (Ctrl+V / Cmd+V)
 - 🧵 **Cola secuencial** con progreso, ETA y cancelación
 - 🔀 **Reordenar** tarjetas arrastrando (también en móvil, manteniendo pulsado) antes de descargar el ZIP
@@ -22,6 +22,9 @@ VP8 en modo VBR limitado: el CRF marca el piso de calidad y `-b:v` el techo de b
 | 1080 | 1920×1080 | 10 | 1500k | 128k | 4 | original |
 | 720p ⭐ | 1280×720 | 20 | 1200k | 96k | 5 | original |
 | 480p | 854×480 | 33 | 800k | 96k | 8 | 24 |
+| loop | 960×960 | 30 | 600k | sin audio | 5 | 12 |
+
+**loop** es para vídeos que van en bucle y en silencio dentro de una web (hovers, fondos): sin pista de audio, 12 fps y 960 px como máximo.
 
 Se configuran en [`js/config.js`](js/config.js).
 

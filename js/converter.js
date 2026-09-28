@@ -32,8 +32,9 @@ export function buildFfmpegArgs(inputName, preset) {
     '-cpu-used', String(preset.cpuUsed),  // 0-16 (más alto = más rápido)
     '-lag-in-frames', '16',               // Lookahead frames (max efectivo 16)
     '-auto-alt-ref', '1',                 // Mejora calidad con frames alternativos
-    '-c:a', CONFIG.AUDIO_CODEC,           // libvorbis
-    '-b:a', preset.audioBitrate,
+    ...(preset.audioBitrate
+      ? ['-c:a', CONFIG.AUDIO_CODEC, '-b:a', preset.audioBitrate]  // libvorbis
+      : ['-an']),                         // sin audio
     '-threads', '2',
     '-vf', buildScaleFilter(preset)
   ];

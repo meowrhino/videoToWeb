@@ -74,6 +74,20 @@ export const PRESETS = {
     audioBitrate: '96k',
     cpuUsed: 8,
     fps: 24
+  },
+  // Para loops de web (hover, fondos): sin audio, 960 px y 12 fps.
+  // Se ven en bucle y en silencio, así que el sonido y los fps de más solo pesan.
+  loop: {
+    id: 'loop',
+    label: 'loop',
+    suffix: '_loop',
+    maxWidth: 960,
+    maxHeight: 960,
+    crf: 30,
+    videoBitrate: '600k',
+    audioBitrate: null,      // null = sin pista de audio
+    cpuUsed: 5,
+    fps: 12
   }
 };
 
