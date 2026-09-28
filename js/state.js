@@ -1,4 +1,4 @@
-import { getPreset } from './config.js';
+import { settingsFor } from './config.js';
 
 // El orden de state.videos es el orden visual de las tarjetas y el del ZIP final.
 export const state = {
@@ -16,7 +16,7 @@ export function findVideo(id) {
 }
 
 export function createVideoData(file, metadata, presetId = state.mode) {
-  const preset = getPreset(presetId);
+  const preset = settingsFor(presetId, file);
   return {
     id: crypto.randomUUID(),
     presetId: preset.id,

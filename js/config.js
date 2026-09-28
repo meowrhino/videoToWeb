@@ -28,7 +28,7 @@ export const CONFIG = {
   METADATA_TIMEOUT_MS: 5000,
 
   // Algunos navegadores dejan file.type vacío para estos formatos (mkv, flv...)
-  VIDEO_EXTENSIONS: ['mp4', 'm4v', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv', 'mpg', 'mpeg', '3gp', 'ts', 'mts', 'm2ts', 'ogv']
+  VIDEO_EXTENSIONS: ['mp4', 'm4v', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv', 'mpg', 'mpeg', '3gp', 'ts', 'mts', 'm2ts', 'ogv', 'gif']
 };
 
 // ============================================================
@@ -87,9 +87,26 @@ export const PRESETS = {
     videoBitrate: '600k',
     audioBitrate: null,      // null = sin pista de audio
     cpuUsed: 5,
-    fps: 12
+    fps: 12,
+    // Un gif (256 colores con trama de puntos) necesita mucha más calidad que un
+    // vídeo para no quedar borroso: con estos valores sale igual que el gif a
+    // 960 px y pesa ~5-7 veces menos que un WebP animado.
+    gif: { crf: 10, videoBitrate: '2500k' }
   }
 };
+
+export function isGif(file) {
+  return file?.type === 'image/gif' || /\.gif$/i.test(file?.name || '');
+}
+
+// Ajustes con los que se convierte un archivo: los del preset y, si es un gif,
+// los retoques para gif. A un gif nunca se le cambian los fps: tiene su propio
+// ritmo (a menudo entrecortado a propósito) y forzarlos repetiría fotogramas.
+export function settingsFor(presetId, file) {
+  const preset = getPreset(presetId);
+  if (!isGif(file)) return preset;
+  return { ...preset, ...preset.gif, fps: null };
+}
 
 export function getPreset(id) {
   return PRESETS[id] || PRESETS.medium;

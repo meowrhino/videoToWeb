@@ -1,4 +1,4 @@
-import { CONFIG, getPreset } from './config.js';
+import { CONFIG, getPreset, settingsFor } from './config.js';
 import { state, findVideo } from './state.js';
 import { debugLog, formatDuration, formatMB, formatReduction, loadScript, stripExtension, triggerDownload } from './utils.js';
 import { showNotification } from './ui/notifications.js';
@@ -8,7 +8,7 @@ function getOutputBaseName(video) {
 }
 
 function buildLogText(video) {
-  const preset = getPreset(video.presetId);
+  const preset = settingsFor(video.presetId, video.originalFile);
   const { width, height, duration } = video.metadata;
 
   const lines = [

@@ -1,4 +1,4 @@
-import { CONFIG, getPreset } from './config.js';
+import { CONFIG, settingsFor } from './config.js';
 import { state } from './state.js';
 import { debugLog, formatMB, formatReduction, getExtension } from './utils.js';
 import { logVideo, updateVideoCard, updateVideosContainer } from './ui/cards.js';
@@ -36,7 +36,8 @@ export function buildFfmpegArgs(inputName, preset) {
       ? ['-c:a', CONFIG.AUDIO_CODEC, '-b:a', preset.audioBitrate]  // libvorbis
       : ['-an']),                         // sin audio
     '-threads', '2',
-    '-vf', buildScaleFilter(preset)
+    '-vf', buildScaleFilter(preset),
+    '-pix_fmt', 'yuv420p'                 // sin canal alfa (los gif lo traen) y compatible con todo
   ];
   if (preset.fps) {
     args.push('-r', String(preset.fps));
@@ -87,7 +88,7 @@ function isMemoryError(message) {
  * Nunca lanza: deja el video en 'completed', 'error' o 'cancelled'.
  */
 export async function convertVideo(video) {
-  const preset = getPreset(video.presetId);
+  const preset = settingsFor(video.presetId, video.originalFile);
   const ffmpeg = state.ffmpeg;
   const durationSec = Number(video.metadata?.duration || 0);
 

@@ -1,10 +1,11 @@
-import { CONFIG } from './config.js';
+import { CONFIG, isGif } from './config.js';
 import { debugLog } from './utils.js';
 
 // Lee duración y resolución con un <video>. Solo es informativo: si el navegador
 // no sabe decodificar el formato devuelve ceros, y el escalado lo decide ffmpeg igualmente.
 export function extractMetadata(file) {
   debugLog('[extractMetadata] Extrayendo metadata de:', file.name);
+  if (isGif(file)) return extractGifMetadata(file);
   return new Promise((resolve) => {
     const video = document.createElement('video');
     video.preload = 'metadata';
@@ -42,5 +43,20 @@ export function extractMetadata(file) {
     video.onerror = () => fallback('Error extrayendo metadata');
 
     video.src = src;
+  });
+}
+
+// Un gif no se abre con <video>: su tamaño se lee con <img> (la duración no la da).
+function extractGifMetadata(file) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const src = URL.createObjectURL(file);
+    const finish = (width, height) => {
+      URL.revokeObjectURL(src);
+      resolve({ duration: 0, width, height, codec: 'image/gif' });
+    };
+    img.onload = () => finish(img.naturalWidth, img.naturalHeight);
+    img.onerror = () => finish(0, 0);
+    img.src = src;
   });
 }

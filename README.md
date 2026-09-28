@@ -26,6 +26,8 @@ VP8 en modo VBR limitado: el CRF marca el piso de calidad y `-b:v` el techo de b
 
 **loop** es para vídeos que van en bucle y en silencio dentro de una web (hovers, fondos): sin pista de audio, 12 fps y 960 px como máximo.
 
+**GIFs**: también se pueden convertir. Mantienen sus fps (su ritmo, aunque sea entrecortado) y en modo loop se codifican con más calidad (CRF 10, techo 2500k), porque la trama de puntos del gif queda borrosa con los ajustes de vídeo. Aun así pesan ~5-7 veces menos que el mismo gif en WebP animado.
+
 Se configuran en [`js/config.js`](js/config.js).
 
 ## 🔧 Tecnología
