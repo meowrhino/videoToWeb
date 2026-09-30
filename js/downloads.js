@@ -1,14 +1,24 @@
 import { CONFIG, getPreset, settingsFor } from './config.js';
 import { state, findVideo } from './state.js';
 import { debugLog, formatDuration, formatMB, formatReduction, loadScript, stripExtension, triggerDownload } from './utils.js';
+import { posterExtension } from './poster.js';
 import { showNotification } from './ui/notifications.js';
 
+// Con "numerar", 01, 02... en el orden de las tarjetas (contando solo las
+// completadas, que son las que se descargan). Si no, el nombre original.
 function getOutputBaseName(video) {
+  if (state.options.number) {
+    const n = state.videos.filter(v => v.status === 'completed').indexOf(video) + 1;
+    return String(n).padStart(2, '0');
+  }
   return `${stripExtension(video.originalFile.name)}${getPreset(video.presetId).suffix}`;
 }
 
+// El fotograma se llama como el vídeo + .poster: 01.webm y 01.poster.webp
+const posterName = (baseName, video) => `${baseName}.poster.${posterExtension(video.posterBlob)}`;
+
 function buildLogText(video) {
-  const preset = settingsFor(video.presetId, video.originalFile);
+  const preset = settingsFor(video.presetId, video.originalFile, video);
   const { width, height, duration } = video.metadata;
 
   const lines = [
@@ -46,11 +56,15 @@ export function downloadVideo(id) {
 
   const baseName = getOutputBaseName(video);
   triggerDownload(video.webmUrl, `${baseName}.webm`);
+  if (video.posterBlob) {
+    const posterUrl = URL.createObjectURL(video.posterBlob);
+    setTimeout(() => triggerDownload(posterUrl, posterName(baseName, video), { revoke: true }), 100);
+  }
 
   // El log solo se descarga en modo debug
   if (CONFIG.DEBUG_LOGS) {
     const logUrl = URL.createObjectURL(new Blob([buildLogText(video)], { type: 'text/plain' }));
-    setTimeout(() => triggerDownload(logUrl, `${baseName}_log.txt`, { revoke: true }), 100);
+    setTimeout(() => triggerDownload(logUrl, `${baseName}_log.txt`, { revoke: true }), 200);
   }
   debugLog('[downloadVideo] Descarga iniciada:', `${baseName}.webm`);
 }
@@ -79,6 +93,7 @@ export async function downloadAll() {
       nameCounts[baseName] = count;
       const name = count === 1 ? baseName : `${baseName}-${count}`;
       zip.file(`${name}.webm`, video.webmBlob);
+      if (video.posterBlob) zip.file(posterName(name, video), video.posterBlob);
       if (CONFIG.DEBUG_LOGS) {
         zip.file(`${name}_log.txt`, buildLogText(video));
       }

@@ -40,6 +40,7 @@ export function renderVideoCard(video) {
       <div class="video-badges">
         <span class="badge badge-preset">${getPreset(video.presetId).label}</span>
         <span class="badge badge-crf">crf ${video.crf}</span>
+        ${video.mute ? '<span class="badge">sin audio</span>' : ''}
         <span class="badge badge-res"${resolution ? '' : ' hidden'}>${resolution ?? ''}</span>
       </div>
     </div>

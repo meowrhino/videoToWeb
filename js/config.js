@@ -102,10 +102,11 @@ export function isGif(file) {
 // Ajustes con los que se convierte un archivo: los del preset y, si es un gif,
 // los retoques para gif. A un gif nunca se le cambian los fps: tiene su propio
 // ritmo (a menudo entrecortado a propósito) y forzarlos repetiría fotogramas.
-export function settingsFor(presetId, file) {
-  const preset = getPreset(presetId);
-  if (!isGif(file)) return preset;
-  return { ...preset, ...preset.gif, fps: null };
+// Con mute, sin pista de audio (en una web los vídeos suenan mudos).
+export function settingsFor(presetId, file, { mute = false } = {}) {
+  let preset = getPreset(presetId);
+  if (isGif(file)) preset = { ...preset, ...preset.gif, fps: null };
+  return mute ? { ...preset, audioBitrate: null } : preset;
 }
 
 export function getPreset(id) {

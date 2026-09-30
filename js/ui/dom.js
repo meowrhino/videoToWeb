@@ -6,6 +6,7 @@ export const dom = {
   fileInput: document.getElementById('fileInput'),
   selectBtn: document.getElementById('selectBtn'),
   qualityButtons: document.querySelectorAll('.quality-btn'),
+  optionInputs: document.querySelectorAll('.options input[data-option]'),
   videosContainer: document.getElementById('videosContainer'),
   videosList: document.getElementById('videosList'),
   videoCount: document.getElementById('videoCount'),

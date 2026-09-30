@@ -56,6 +56,14 @@
       </button>
     </div>
 
+    <!-- Opciones para usar los vídeos en una web. Se recuerdan entre visitas.
+         Fotograma y sin audio valen para los vídeos que se añaden después. -->
+    <div class="options" role="group" aria-label="opciones">
+      <label><input type="checkbox" data-option="poster"> fotograma <small>.poster.webp, lo que se ve mientras carga</small></label>
+      <label><input type="checkbox" data-option="mute"> sin audio <small>en una web suenan mudos</small></label>
+      <label><input type="checkbox" data-option="number"> numerar <small>01, 02… en el orden de las tarjetas</small></label>
+    </div>
+
     <!-- DEBUG: convertir en las 3 calidades a la vez (visible solo con CONFIG.DEBUG_LOGS) -->
     <div id="debugTriple" class="debug-triple" hidden>
       <button id="debugTripleBtn" class="btn-secondary">

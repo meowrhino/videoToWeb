@@ -1,6 +1,6 @@
 // Punto de entrada: conecta los eventos del DOM con la lógica de la app.
 import { CONFIG, PRESETS, getPreset } from './config.js';
-import { state, createVideoData } from './state.js';
+import { state, createVideoData, saveOptions } from './state.js';
 import { debugLog, isVideoFile } from './utils.js';
 import { loadFFmpeg } from './ffmpeg-loader.js';
 import { extractMetadata } from './metadata.js';
@@ -23,6 +23,15 @@ function selectMode(button) {
 
 dom.qualityButtons.forEach(button => {
   button.addEventListener('click', () => selectMode(button));
+});
+
+// ---------- Opciones: fotograma, sin audio, numerar ----------
+dom.optionInputs.forEach(input => {
+  input.checked = Boolean(state.options[input.dataset.option]);
+  input.addEventListener('change', () => {
+    state.options[input.dataset.option] = input.checked;
+    saveOptions();
+  });
 });
 
 // ---------- Entrada de archivos: clic, drag & drop, pegar ----------

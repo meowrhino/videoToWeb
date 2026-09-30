@@ -1,6 +1,7 @@
 import { CONFIG, settingsFor } from './config.js';
 import { state } from './state.js';
 import { debugLog, formatMB, formatReduction, getExtension } from './utils.js';
+import { extractPoster, posterExtension } from './poster.js';
 import { logVideo, updateVideoCard, updateVideosContainer } from './ui/cards.js';
 import { showNotification } from './ui/notifications.js';
 
@@ -88,7 +89,7 @@ function isMemoryError(message) {
  * Nunca lanza: deja el video en 'completed', 'error' o 'cancelled'.
  */
 export async function convertVideo(video) {
-  const preset = settingsFor(video.presetId, video.originalFile);
+  const preset = settingsFor(video.presetId, video.originalFile, video);
   const ffmpeg = state.ffmpeg;
   const durationSec = Number(video.metadata?.duration || 0);
 
@@ -159,12 +160,20 @@ export async function convertVideo(video) {
     if (bitrateKbps !== null) logVideo(video, `Bitrate resultante: ${bitrateKbps} kbps`);
     logVideo(video, `Tamaño: ${formatMB(blob.size)} (original ${formatMB(video.originalSize)}, ${formatReduction(video.originalSize, blob.size)})`);
 
+    const webmUrl = URL.createObjectURL(blob);
+    if (video.poster) {
+      video.posterBlob = await extractPoster(webmUrl);
+      logVideo(video, video.posterBlob
+        ? `Fotograma: .poster.${posterExtension(video.posterBlob)} (${formatMB(video.posterBlob.size)})`
+        : 'No se pudo sacar el fotograma');
+    }
+
     Object.assign(video, {
       status: 'completed',
       progress: 100,
       webmBlob: blob,
       webmSize: blob.size,
-      webmUrl: URL.createObjectURL(blob)
+      webmUrl
     });
     showNotification(`video convertido: ${video.originalFile.name}`, 'success');
   } catch (error) {

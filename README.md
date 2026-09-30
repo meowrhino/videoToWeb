@@ -11,6 +11,10 @@
 - 📥 **Varias formas de añadir vídeos**: arrastrar, seleccionar o pegar (Ctrl+V / Cmd+V)
 - 🧵 **Cola secuencial** con progreso, ETA y cancelación
 - 🔀 **Reordenar** tarjetas arrastrando (también en móvil, manteniendo pulsado) antes de descargar el ZIP
+- 🖼️ **Opciones para webs** (se recuerdan entre visitas):
+  - **fotograma**: junto a cada `.webm`, su `.poster.webp` (un fotograma a medio segundo), para el `poster` del `<video>`. Activado por defecto. En Safari, que no codifica WebP, sale `.poster.jpg`
+  - **sin audio**: quita la pista de sonido en cualquier calidad (en una web los vídeos suenan mudos)
+  - **numerar**: los ficheros salen como `01.webm`, `01.poster.webp`, `02.webm`… en el orden de las tarjetas
 - 📦 **Descarga individual o en ZIP**
 
 ## 🎛️ Presets
@@ -58,6 +62,7 @@ js/
   ffmpeg-loader.js    carga/terminación de ffmpeg.wasm
   metadata.js         duración y resolución vía <video>
   downloads.js        descarga individual, ZIP y log
+  poster.js           el fotograma (.poster.webp) del vídeo convertido
   utils.js            formateo y helpers
   ui/dom.js           referencias al DOM y estado del área de subida
   ui/cards.js         render y actualización de tarjetas

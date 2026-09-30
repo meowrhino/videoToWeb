@@ -14,6 +14,7 @@
 
 ## hecho
 
+- [x] fotograma `.poster.webp` junto a cada vídeo, opción "sin audio" y "numerar" (01, 02…)
 - [x] drag & drop para reordenar videos antes del ZIP (SortableJS)
 - [x] pegar desde clipboard (Ctrl+V / Cmd+V)
 - [x] open graph tags
