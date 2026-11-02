@@ -122,8 +122,12 @@ export async function convertVideo(video) {
     }
   };
 
+  // Las últimas líneas de ffmpeg: si falla, son las que dicen por qué
+  const lastLines = [];
   const onLog = ({ message }) => {
     debugLog('[FFmpeg]', message);
+    lastLines.push(message.trim());
+    if (lastLines.length > 5) lastLines.shift();
     const frameMatch = message.match(/frame=\s*(\d+).*size=\s*([\d.]+)kB/);
     if (frameMatch) {
       video.currentFrame = parseInt(frameMatch[1], 10);
@@ -149,6 +153,7 @@ export async function convertVideo(video) {
 
     const exitCode = await ffmpeg.exec(args);
     if (exitCode !== 0) {
+      lastLines.forEach(line => logVideo(video, line));
       throw new Error(`FFmpeg terminó con código ${exitCode}. Revisa los logs para más detalles.`);
     }
 
