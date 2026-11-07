@@ -1,11 +1,10 @@
 # todo — videoToWeb
 
-*actualizado 23 septiembre 2026*
+*actualizado 7 noviembre 2026*
 
 ## next steps
 
 - [ ] encoding en dos pasadas (two-pass) para mejor ratio calidad/tamaño
-- [ ] thumbnail/preview: extraer un frame como miniatura en la tarjeta
 - [ ] estimación de tamaño de salida antes de convertir
 - [ ] slider CRF avanzado para control más fino
 - [ ] re-convertir con otro preset sin volver a subir el archivo
@@ -14,7 +13,12 @@
 
 ## hecho
 
-- [x] fotograma `.poster.webp` junto a cada vídeo, opción "sin audio" y "numerar" (01, 02…)
+- [x] fotograma con ffmpeg (`.poster.webp` también en Safari) y su miniatura en la tarjeta; aviso si falta
+- [x] vídeos verticales con la caja girada (antes 1080×1920 en 720p salía 406×720)
+- [x] gifs con retardo de 1 cs a 10 cs (salían 10 veces más rápidos)
+- [x] numerar sin ceros (1, 2, 3) con "empezar en"; nombre fijo por tarjeta, igual suelto que en el ZIP
+- [x] calidad y opciones valen para los vídeos que esperan
+- [x] fotograma `.poster.webp` junto a cada vídeo, opción "sin audio" y "numerar"
 - [x] drag & drop para reordenar videos antes del ZIP (SortableJS)
 - [x] pegar desde clipboard (Ctrl+V / Cmd+V)
 - [x] open graph tags

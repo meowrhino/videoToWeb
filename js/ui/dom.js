@@ -19,7 +19,7 @@ export const dom = {
 const UPLOAD_TEXT = {
   idle: {
     title: 'arrastra vídeos aquí o haz clic para seleccionar',
-    subtitle: 'soporta mp4, mov, avi, mkv, flv y más formatos'
+    subtitle: 'soporta mp4, mov, gif, avi, mkv y más formatos'
   },
   loading: {
     title: 'cargando ffmpeg...',
@@ -27,11 +27,13 @@ const UPLOAD_TEXT = {
   }
 };
 
-export function setUploadAreaLoading(isLoading) {
+// errorMessage, si ffmpeg no ha cargado: sustituye al subtítulo para que no se pierda
+export function setUploadAreaLoading(isLoading, errorMessage = null) {
   const text = isLoading ? UPLOAD_TEXT.loading : UPLOAD_TEXT.idle;
   dom.uploadArea.classList.toggle('loading', isLoading);
   dom.uploadArea.setAttribute('aria-busy', String(isLoading));
   dom.uploadTitle.textContent = text.title;
-  dom.uploadSubtitle.textContent = text.subtitle;
+  dom.uploadSubtitle.textContent = errorMessage || text.subtitle;
+  dom.uploadSubtitle.classList.toggle('upload-error', Boolean(errorMessage));
   dom.selectBtn.disabled = isLoading;
 }

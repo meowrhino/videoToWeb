@@ -1,3 +1,8 @@
+/* Inknut Antiqua, servida desde aquí (antes desde Google Fonts): fonts/, subconjunto latino */
+@font-face { font-family: 'Inknut Antiqua'; font-weight: 400; font-display: swap; src: url(fonts/inknut-400.woff2) format('woff2'); }
+@font-face { font-family: 'Inknut Antiqua'; font-weight: 500; font-display: swap; src: url(fonts/inknut-500.woff2) format('woff2'); }
+@font-face { font-family: 'Inknut Antiqua'; font-weight: 600; font-display: swap; src: url(fonts/inknut-600.woff2) format('woff2'); }
+
 * {
   margin: 0;
   padding: 0;
@@ -86,7 +91,7 @@ body {
 }
 
 /* Buttons */
-.btn-primary, .btn-secondary, .btn-download, .btn-remove {
+.btn-primary, .btn-secondary, .btn-download, .btn-retry, .btn-remove {
   font-family: inherit;
   letter-spacing: 0.05em;
   border-radius: var(--radius);
@@ -163,9 +168,28 @@ body {
   justify-content: center;
 }
 
-.btn-remove:hover {
+.btn-remove:hover:not(:disabled) {
   border-color: var(--error);
   color: var(--error);
+}
+
+.btn-remove:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.btn-retry {
+  padding: 0.4rem 0.9rem;
+  background: transparent;
+  border: 1px solid var(--text);
+  color: var(--text);
+  font-size: 0.6rem;
+  font-weight: 600;
+}
+
+.btn-retry:hover {
+  background: var(--text);
+  color: var(--bg);
 }
 
 /* Quality Buttons */
@@ -242,6 +266,18 @@ body {
 .options small {
   color: var(--text-muted);
   font-size: 0.6rem;
+}
+
+.options input[type="number"] {
+  width: 3.5rem;
+  font: inherit;
+  padding: 0 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+
+.upload-error {
+  color: var(--error);
 }
 
 /* Videos Grid */
@@ -323,6 +359,31 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.video-out {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+  overflow-wrap: anywhere;
+}
+
+.video-out-warning {
+  color: var(--warning);
+}
+
+.video-poster {
+  display: block;
+  width: fit-content;
+  margin-bottom: 0.75rem;
+}
+
+.video-poster img {
+  display: block;
+  max-width: 100%;
+  max-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
 }
 
 .video-meta {

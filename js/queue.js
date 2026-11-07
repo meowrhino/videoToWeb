@@ -56,10 +56,16 @@ async function processQueue() {
       const ready = await loadFFmpeg();
       if (video.status !== 'pending') continue; // eliminado mientras cargaba
       if (!ready) {
-        video.status = 'error';
-        video.errorMessage = 'ffmpeg no pudo cargarse';
-        updateVideoCard(video);
-        continue;
+        // Sin ffmpeg no sale ninguno: fuera todos de la cola, con el único aviso de loadFFmpeg
+        for (const waiting of [video, ...state.pendingQueue.map(findVideo)]) {
+          if (waiting?.status !== 'pending') continue;
+          waiting.status = 'error';
+          waiting.errorMessage = 'ffmpeg no pudo cargarse';
+          updateVideoCard(waiting);
+        }
+        state.pendingQueue = [];
+        updateVideosContainer();
+        break;
       }
 
       await convertVideo(video);
@@ -73,6 +79,7 @@ async function processQueue() {
 function discardVideo(video) {
   state.pendingQueue = state.pendingQueue.filter(id => id !== video.id);
   if (video.webmUrl) URL.revokeObjectURL(video.webmUrl);
+  if (video.posterUrl) URL.revokeObjectURL(video.posterUrl);
   state.videos.splice(state.videos.indexOf(video), 1);
   removeVideoCard(video.id);
   updateVideosContainer();
@@ -95,6 +102,17 @@ export function cancelVideo(id) {
   loadFFmpeg();
 }
 
+// Un vídeo en error o cancelado vuelve a la cola, con el mismo archivo y sus opciones
+export function retryVideo(id) {
+  const video = findVideo(id);
+  if (!video || (video.status !== 'error' && video.status !== 'cancelled')) return;
+  Object.assign(video, { status: 'pending', errorMessage: null, progress: 0, currentFrame: null, currentSizeKB: null });
+  updateVideoCard(video);
+  updateVideosContainer(); // vuelve a contar para los nombres
+  state.pendingQueue.push(video.id);
+  processQueue();
+}
+
 // Botón de la tarjeta: cancela si está convirtiendo, si no elimina
 export function removeVideo(id) {
   const video = findVideo(id);
@@ -110,4 +128,5 @@ export function removeVideo(id) {
 export function syncOrderFromDom(container) {
   const order = Array.from(container.children, card => card.dataset.videoId);
   state.videos.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+  updateVideosContainer(); // con "numerar", los nombres siguen el orden
 }

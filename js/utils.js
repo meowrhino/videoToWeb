@@ -23,8 +23,9 @@ export function formatDuration(seconds) {
 }
 
 export function formatEta(seconds) {
-  if (seconds < 60) return `~${Math.round(seconds)}s`;
-  return `~${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+  const s = Math.round(seconds); // redondear antes de partir, si no sale "~1m 60s"
+  if (s < 60) return `~${s}s`;
+  return `~${Math.floor(s / 60)}m ${s % 60}s`;
 }
 
 export function escapeHtml(text) {
@@ -69,4 +70,34 @@ export function triggerDownload(url, filename, { revoke = false } = {}) {
   if (revoke) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+}
+
+// Los navegadores enseñan a 10 cs los fotogramas de un gif con retardo 0 o 1 cs,
+// pero ffmpeg deja el de 1 cs tal cual (100 fps) y el webm sale 10 veces más
+// rápido que el gif. Se cambia en los bytes (Graphic Control Extension) antes de
+// convertir. Devuelve cuántos fotogramas ha cambiado.
+export function fixGifDelays(bytes) {
+  if (String.fromCharCode(bytes[0], bytes[1], bytes[2]) !== 'GIF') return 0;
+  const paletteSize = flags => (flags & 0x80 ? 3 << ((flags & 7) + 1) : 0);
+  const skipSubBlocks = (i) => {
+    while (i < bytes.length && bytes[i] !== 0) i += bytes[i] + 1;
+    return i + 1;
+  };
+  let fixed = 0;
+  let i = 13 + paletteSize(bytes[10]); // cabecera + paleta global
+  while (i < bytes.length) {
+    if (bytes[i] === 0x21) { // extensión: la 0xF9 trae el retardo
+      if (bytes[i + 1] === 0xf9 && bytes[i + 2] === 4 && (bytes[i + 4] | (bytes[i + 5] << 8)) < 2) {
+        bytes[i + 4] = 10;
+        bytes[i + 5] = 0;
+        fixed++;
+      }
+      i = skipSubBlocks(i + 2);
+    } else if (bytes[i] === 0x2c) { // imagen: descriptor, paleta local, tamaño LZW y datos
+      i = skipSubBlocks(i + 10 + paletteSize(bytes[i + 9]) + 1);
+    } else {
+      break; // 0x3B (fin del gif) o un gif roto: lo que quede, tal cual
+    }
+  }
+  return fixed;
 }

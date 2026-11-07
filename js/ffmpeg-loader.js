@@ -12,13 +12,40 @@ async function toBlobURL(url, mimeType) {
   return URL.createObjectURL(new Blob([buffer], { type: mimeType }));
 }
 
+// Sin SharedArrayBuffer no hay ffmpeg. La primera visita ya la recarga coi-serviceworker
+// (main.js no llama antes); si sigue sin haber, el navegador no deja usar el service
+// worker (una ventana privada, por ejemplo).
+const NO_SAB_MESSAGE = 'este navegador no deja convertir aquí: abre la página en una ventana normal de chrome o firefox';
+const LOAD_ERROR_MESSAGE = 'no se pudo descargar ffmpeg: revisa la conexión y recarga la página';
+
+// El core (~33 MB) se descarga una vez por visita: cancelar termina la instancia,
+// pero la nueva usa las mismas blob URLs (por eso no se revocan). Si falla, se vacía
+// para que el siguiente intento vuelva a descargarlo.
+let coreURLs = null;
+function getCoreURLs() {
+  const base = CONFIG.CORE_MT_BASE;
+  coreURLs ||= Promise.all([
+    toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
+    toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
+    toBlobURL(`${base}/ffmpeg-core.worker.js`, 'text/javascript')
+  ]).catch((error) => {
+    coreURLs = null;
+    throw error;
+  });
+  return coreURLs;
+}
+
+let loadedOnce = false;
+
 async function doLoadFFmpeg() {
-  setUploadAreaLoading(true);
+  // Tras cancelar se recarga sin descargar nada: el área de subida no cambia
+  if (!loadedOnce) setUploadAreaLoading(true);
+  let errorMessage = null;
 
   try {
-    // coi-serviceworker necesita un reload inicial para activar SharedArrayBuffer
     if (typeof SharedArrayBuffer === 'undefined') {
-      throw new Error('SharedArrayBuffer no disponible. Recarga la página (coi-serviceworker necesita un reload inicial).');
+      errorMessage = NO_SAB_MESSAGE;
+      throw new Error('SharedArrayBuffer no disponible');
     }
 
     debugLog('[loadFFmpeg] Descargando core desde:', CONFIG.CORE_MT_BASE);
@@ -26,25 +53,22 @@ async function doLoadFFmpeg() {
     const ffmpeg = new FFmpeg();
     ffmpeg.on('log', ({ message }) => debugLog('[FFmpeg log]', message));
 
-    const base = CONFIG.CORE_MT_BASE;
-    const [coreURL, wasmURL, workerURL] = await Promise.all([
-      toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
-      toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
-      toBlobURL(`${base}/ffmpeg-core.worker.js`, 'text/javascript')
-    ]);
+    const [coreURL, wasmURL, workerURL] = await getCoreURLs();
     await ffmpeg.load({ coreURL, wasmURL, workerURL });
 
     state.ffmpeg = ffmpeg;
     state.ffmpegLoaded = true;
+    loadedOnce = true;
     debugLog('[loadFFmpeg] ✓ ffmpeg.wasm cargado y listo');
-    showNotification('ffmpeg cargado correctamente', 'success');
   } catch (error) {
     console.error('[loadFFmpeg] ✗ Error cargando FFmpeg:', error);
-    showNotification('error al cargar ffmpeg. por favor, recarga la página.', 'error');
+    errorMessage ||= LOAD_ERROR_MESSAGE;
+    showNotification(errorMessage, 'error');
     state.ffmpeg = null;
     state.ffmpegLoaded = false;
   } finally {
-    setUploadAreaLoading(false);
+    // El aviso se va a los 3 s: el error se queda también en el área de subida
+    setUploadAreaLoading(false, errorMessage);
   }
 }
 

@@ -1,8 +1,8 @@
 import { settingsFor } from './config.js';
 
-// Opciones que se recuerdan entre visitas: fotograma, sin audio, numerar.
+// Opciones que se recuerdan entre visitas: fotograma, sin audio, numerar y desde qué número.
 const OPTIONS_KEY = 'videoToWeb.opciones';
-const DEFAULT_OPTIONS = { poster: true, mute: false, number: false };
+const DEFAULT_OPTIONS = { poster: true, mute: false, number: false, start: 1 };
 
 function loadOptions() {
   try {
@@ -20,8 +20,8 @@ export function saveOptions() {
 export const state = {
   videos: [],
   mode: 'medium',
-  // poster y mute se aplican a los vídeos que se añaden después (como la calidad);
-  // number se mira al descargar, así sigue el orden en que estén las tarjetas
+  // calidad, poster y mute valen para los vídeos que esperan (los convertidos ya no
+  // cambian); number y start se miran al nombrar, así siguen el orden de las tarjetas
   options: loadOptions(),
   ffmpeg: null,
   ffmpegLoaded: false,
@@ -42,6 +42,7 @@ export function createVideoData(file, metadata, presetId = state.mode) {
     poster: state.options.poster,
     mute: state.options.mute,
     posterBlob: null,
+    posterUrl: null,
     originalFile: file,
     originalSize: file.size,
     webmBlob: null,
@@ -52,6 +53,8 @@ export function createVideoData(file, metadata, presetId = state.mode) {
     currentFrame: null,
     currentSizeKB: null,
     scaledResolution: null,
+    extractingPoster: false,
+    downloaded: false, // para avisar antes de cerrar la pestaña
     status: 'pending',
     progress: 0,
     errorMessage: null,

@@ -12,14 +12,15 @@
 - 🧵 **Cola secuencial** con progreso, ETA y cancelación
 - 🔀 **Reordenar** tarjetas arrastrando (también en móvil, manteniendo pulsado) antes de descargar el ZIP
 - 🖼️ **Opciones para webs** (se recuerdan entre visitas):
-  - **fotograma**: junto a cada `.webm`, su `.poster.webp` (un fotograma a medio segundo), para el `poster` del `<video>`. Activado por defecto. En Safari, que no codifica WebP, sale `.poster.jpg`
+  - **fotograma**: junto a cada `.webm`, su `.poster.webp`, para el `poster` del `<video>`. Lo saca ffmpeg del webm (sale `.webp` en todos los navegadores): a medio segundo, o el primer fotograma en modo loop y en clips de menos de 1 s. Activado por defecto. La tarjeta enseña la miniatura (clic para bajarla sola) y avisa si no se pudo sacar
   - **sin audio**: quita la pista de sonido en cualquier calidad (en una web los vídeos suenan mudos)
-  - **numerar**: los ficheros salen como `01.webm`, `01.poster.webp`, `02.webm`… en el orden de las tarjetas
-- 📦 **Descarga individual o en ZIP**
+  - **numerar**: los ficheros salen como `1.webm`, `1.poster.webp`, `2.webm`… (sin ceros, como las fotos de imgToWeb) en el orden de las tarjetas, desde el número de **empezar en**
+  - la calidad, el fotograma y sin audio valen para los vídeos que esperan; los ya convertidos no cambian
+- 📦 **Descarga individual o en ZIP**, con el mismo nombre en las dos: cada tarjeta dice con cuál sale (`se descarga como 6.webm + 6.poster.webp`)
 
 ## 🎛️ Presets
 
-VP8 en modo VBR limitado: el CRF marca el piso de calidad y `-b:v` el techo de bitrate. El vídeo solo se reduce (nunca se amplía) y se mantiene la relación de aspecto.
+VP8 en modo VBR limitado: el CRF marca el piso de calidad y `-b:v` el techo de bitrate. El vídeo solo se reduce (nunca se amplía) y se mantiene la relación de aspecto. Un vídeo vertical usa la caja girada (720p: 720×1280).
 
 | Preset | Resolución máx. | CRF | Techo vídeo | Audio | cpu-used | FPS |
 |---|---|---|---|---|---|---|
@@ -30,7 +31,7 @@ VP8 en modo VBR limitado: el CRF marca el piso de calidad y `-b:v` el techo de b
 
 **loop** es para vídeos que van en bucle y en silencio dentro de una web (hovers, fondos): sin pista de audio, 12 fps y 960 px como máximo.
 
-**GIFs**: también se pueden convertir. Mantienen sus fps (su ritmo, aunque sea entrecortado) y en modo loop se codifican con más calidad (CRF 10, techo 2500k), porque la trama de puntos del gif queda borrosa con los ajustes de vídeo. Aun así pesan ~5-7 veces menos que el mismo gif en WebP animado.
+**GIFs**: también se pueden convertir. Mantienen sus fps (su ritmo, aunque sea entrecortado; los fotogramas de 0-1 cs pasan a 10 cs, como los enseñan los navegadores) y en modo loop se codifican con más calidad (CRF 10, techo 2500k), porque la trama de puntos del gif queda borrosa con los ajustes de vídeo. Aun así pesan ~5-7 veces menos que el mismo gif en WebP animado.
 
 Se configuran en [`js/config.js`](js/config.js).
 
@@ -58,11 +59,10 @@ js/
   config.js           CONFIG y PRESETS
   state.js            estado global y creación de videos
   queue.js            añadir archivos, cola secuencial, cancelar/eliminar
-  converter.js        argumentos de ffmpeg y conversión de un video
+  converter.js        argumentos de ffmpeg, conversión de un video y su fotograma
   ffmpeg-loader.js    carga/terminación de ffmpeg.wasm
   metadata.js         duración y resolución vía <video>
-  downloads.js        descarga individual, ZIP y log
-  poster.js           el fotograma (.poster.webp) del vídeo convertido
+  downloads.js        nombres de salida, descarga individual, ZIP y log
   utils.js            formateo y helpers
   ui/dom.js           referencias al DOM y estado del área de subida
   ui/cards.js         render y actualización de tarjetas

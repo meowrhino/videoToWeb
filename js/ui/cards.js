@@ -1,5 +1,6 @@
 import { getPreset } from '../config.js';
 import { state } from '../state.js';
+import { outputNames, posterName } from '../downloads.js';
 import { escapeHtml, formatDuration, formatEta, formatMB, formatReduction } from '../utils.js';
 import { dom } from './dom.js';
 
@@ -17,7 +18,7 @@ function getCard(id) {
   return document.getElementById(`video-${id}`);
 }
 
-// Las acciones (descargar / eliminar / cancelar) se gestionan por delegación en main.js
+// Las acciones (descargar / reintentar / eliminar / cancelar) se gestionan por delegación en main.js
 // leyendo data-action, así la tarjeta no necesita reasignar handlers en cada cambio.
 export function renderVideoCard(video) {
   const card = document.createElement('div');
@@ -40,10 +41,12 @@ export function renderVideoCard(video) {
       <div class="video-badges">
         <span class="badge badge-preset">${getPreset(video.presetId).label}</span>
         <span class="badge badge-crf">crf ${video.crf}</span>
-        ${video.mute ? '<span class="badge">sin audio</span>' : ''}
+        <span class="badge badge-mute"${video.mute ? '' : ' hidden'}>sin audio</span>
         <span class="badge badge-res"${resolution ? '' : ' hidden'}>${resolution ?? ''}</span>
       </div>
+      <div class="video-out"></div>
     </div>
+    <a class="video-poster" hidden title="el fotograma: clic para bajarlo solo"><img alt="fotograma"></a>
     <div class="video-status">
       <div class="status-text" aria-live="polite">esperando...</div>
       <div class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
@@ -56,6 +59,7 @@ export function renderVideoCard(video) {
         ${DOWNLOAD_SVG}
         descargar
       </button>
+      <button class="btn-retry" data-action="retry" hidden>reintentar</button>
       <button class="btn-remove" data-action="remove" title="eliminar" aria-label="eliminar">
         ${REMOVE_SVG}
       </button>
@@ -86,6 +90,8 @@ function getStatusView(video) {
       return { text: 'esperando...', progress: 0 };
 
     case 'converting': {
+      // sacar el fotograma es un momento y el webm ya está: no se ofrece cancelar
+      if (video.extractingPoster) return { text: 'sacando fotograma...', progress: 99, busy: true };
       let text = video.scaledResolution
         ? `convirtiendo (${video.scaledResolution})... ${video.progress}%`
         : `convirtiendo... ${video.progress}%`;
@@ -110,10 +116,10 @@ function getStatusView(video) {
       };
 
     case 'error':
-      return { text: video.errorMessage || 'error al convertir', progress: 0, statusClass: 'status-error' };
+      return { text: video.errorMessage || 'error al convertir', progress: 0, statusClass: 'status-error', retryable: true };
 
     case 'cancelled':
-      return { text: 'cancelado', progress: 0, modifier: 'cancelled' };
+      return { text: 'cancelado', progress: 0, modifier: 'cancelled', retryable: true };
 
     default:
       return { text: '', progress: 0 };
@@ -129,7 +135,10 @@ export function updateVideoCard(video) {
   const progressBar = card.querySelector('.progress-bar');
   const progressFill = card.querySelector('.progress-fill');
 
+  // La calidad, el crf y "sin audio" cambian mientras el vídeo espera
+  card.querySelector('.badge-preset').textContent = getPreset(video.presetId).label;
   card.querySelector('.badge-crf').textContent = `crf ${video.crf}`;
+  card.querySelector('.badge-mute').hidden = !video.mute;
   if (video.scaledResolution) {
     const badgeRes = card.querySelector('.badge-res');
     badgeRes.textContent = video.scaledResolution;
@@ -149,7 +158,10 @@ export function updateVideoCard(video) {
   progressBar.setAttribute('aria-valuenow', String(view.progress));
 
   card.querySelector('.btn-download').disabled = !view.downloadable;
-  setRemoveButton(card.querySelector('.btn-remove'), view.cancellable ? 'cancel' : 'remove');
+  card.querySelector('.btn-retry').hidden = !view.retryable;
+  const removeButton = card.querySelector('.btn-remove');
+  setRemoveButton(removeButton, view.cancellable ? 'cancel' : 'remove');
+  removeButton.disabled = Boolean(view.busy);
 }
 
 function renderLogs(video) {
@@ -173,7 +185,35 @@ export function removeVideoCard(id) {
   getCard(id)?.remove();
 }
 
+// Con qué nombre sale cada vídeo, y la miniatura del fotograma (que es también
+// un enlace para bajarlo solo, por si el navegador bloquea la segunda descarga).
+// Los nombres dependen del orden y de los demás vídeos: se repintan todos.
+function renderOutputNames() {
+  const names = outputNames();
+  for (const video of state.videos) {
+    const card = getCard(video.id);
+    if (!card) continue;
+    const name = names.get(video);
+    const out = card.querySelector('.video-out');
+    const missingPoster = video.status === 'completed' && video.poster && !video.posterBlob;
+    const withPoster = video.poster && !missingPoster;
+    out.hidden = !name;
+    out.textContent = name ? `se descarga como ${name}.webm${withPoster ? ` + ${posterName(name)}` : ''}` : '';
+    if (missingPoster) out.textContent += ' · sin fotograma: no se pudo sacar';
+    out.classList.toggle('video-out-warning', missingPoster);
+
+    const thumb = card.querySelector('.video-poster');
+    thumb.hidden = !video.posterUrl;
+    if (video.posterUrl && name) {
+      thumb.href = video.posterUrl;
+      thumb.download = posterName(name);
+      thumb.querySelector('img').src = video.posterUrl;
+    }
+  }
+}
+
 export function updateVideosContainer() {
+  renderOutputNames();
   const total = state.videos.length;
   const completed = state.videos.filter(v => v.status === 'completed').length;
 

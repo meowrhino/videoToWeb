@@ -1,21 +1,29 @@
 import { CONFIG, getPreset, settingsFor } from './config.js';
 import { state, findVideo } from './state.js';
 import { debugLog, formatDuration, formatMB, formatReduction, loadScript, stripExtension, triggerDownload } from './utils.js';
-import { posterExtension } from './poster.js';
 import { showNotification } from './ui/notifications.js';
 
-// Con "numerar", 01, 02... en el orden de las tarjetas (contando solo las
-// completadas, que son las que se descargan). Si no, el nombre original.
-function getOutputBaseName(video) {
-  if (state.options.number) {
-    const n = state.videos.filter(v => v.status === 'completed').indexOf(video) + 1;
-    return String(n).padStart(2, '0');
+// El nombre con que sale cada vídeo, el mismo en la descarga suelta y en el ZIP
+// (y el que enseña la tarjeta). Con "numerar", 1, 2, 3… desde "empezar en", en el
+// orden de las tarjetas, como las fotos de imgToWeb; si no, el nombre original.
+// Los que fallan o se cancelan no cuentan. Si un nombre se repite, -2, -3…
+export function outputNames() {
+  const names = new Map();
+  const counts = {};
+  let n = state.options.start;
+  for (const video of state.videos) {
+    if (video.status === 'error' || video.status === 'cancelled') continue;
+    const base = state.options.number
+      ? String(n++)
+      : `${stripExtension(video.originalFile.name)}${getPreset(video.presetId).suffix}`;
+    counts[base] = (counts[base] || 0) + 1;
+    names.set(video, counts[base] === 1 ? base : `${base}-${counts[base]}`);
   }
-  return `${stripExtension(video.originalFile.name)}${getPreset(video.presetId).suffix}`;
+  return names;
 }
 
-// El fotograma se llama como el vídeo + .poster: 01.webm y 01.poster.webp
-const posterName = (baseName, video) => `${baseName}.poster.${posterExtension(video.posterBlob)}`;
+// El fotograma se llama como el vídeo + .poster: 1.webm y 1.poster.webp
+export const posterName = baseName => `${baseName}.poster.webp`;
 
 function buildLogText(video) {
   const preset = settingsFor(video.presetId, video.originalFile, video);
@@ -54,11 +62,12 @@ export function downloadVideo(id) {
   const video = findVideo(id);
   if (!video?.webmUrl) return;
 
-  const baseName = getOutputBaseName(video);
+  const baseName = outputNames().get(video);
   triggerDownload(video.webmUrl, `${baseName}.webm`);
-  if (video.posterBlob) {
-    const posterUrl = URL.createObjectURL(video.posterBlob);
-    setTimeout(() => triggerDownload(posterUrl, posterName(baseName, video), { revoke: true }), 100);
+  video.downloaded = true;
+  // Si el navegador bloquea la segunda descarga, el fotograma se baja desde su miniatura
+  if (video.posterUrl) {
+    setTimeout(() => triggerDownload(video.posterUrl, posterName(baseName)), 100);
   }
 
   // El log solo se descarga en modo debug
@@ -85,15 +94,12 @@ export async function downloadAll() {
     showNotification('creando archivo zip...', 'info');
 
     const zip = new window.JSZip();
-    const nameCounts = {};
+    const names = outputNames();
 
     for (const video of completed) {
-      const baseName = getOutputBaseName(video);
-      const count = (nameCounts[baseName] || 0) + 1;
-      nameCounts[baseName] = count;
-      const name = count === 1 ? baseName : `${baseName}-${count}`;
+      const name = names.get(video);
       zip.file(`${name}.webm`, video.webmBlob);
-      if (video.posterBlob) zip.file(posterName(name, video), video.posterBlob);
+      if (video.posterBlob) zip.file(posterName(name), video.posterBlob);
       if (CONFIG.DEBUG_LOGS) {
         zip.file(`${name}_log.txt`, buildLogText(video));
       }
@@ -102,6 +108,7 @@ export async function downloadAll() {
     // WebM ya está comprimido: STORE es mucho más rápido y el ZIP pesa prácticamente lo mismo
     const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'STORE' });
     triggerDownload(URL.createObjectURL(zipBlob), `videos_convertidos_${Date.now()}.zip`, { revoke: true });
+    completed.forEach(v => { v.downloaded = true; });
 
     showNotification(`${completed.length} videos descargados en zip`, 'success');
   } catch (error) {
